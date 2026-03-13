@@ -6,6 +6,15 @@ import GhosttyKit
 
 /// A classic, tabbed terminal experience.
 class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Controller {
+    private struct CachedPullRequestState {
+        let summary: TerminalPullRequestSummary?
+        let checks: [TerminalPullRequestCheck]
+        let threads: [TerminalPullRequestReviewThread]
+        let message: String?
+        let statusMessage: String?
+        let refreshedAt: Date
+    }
+
     override var windowNibName: NSNib.Name? {
         let defaultValue = "Terminal"
 
@@ -60,6 +69,29 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     /// This will be set to the initial frame of the window from the xib on load.
     private var initialFrame: NSRect?
 
+    /// Sidebar state for this controller's tab.
+    private(set) var tabState = TerminalTabState()
+
+    @Published var worktreeSheetModel: TerminalWorktreeSheetModel?
+    @Published var prReviewSheetModel: TerminalPRReviewSheetModel?
+    @Published var fileCommandPaletteModel: TerminalFileCommandPaletteModel?
+
+    let repositoryService = TerminalRepositoryService.shared
+    private var contextRefreshTask: Task<Void, Never>?
+    private var localRepositoryRefreshTask: Task<Void, Never>?
+    private var localRepositoryRefreshKey: TerminalRepositoryKey?
+    private var localRepositoryRefreshNeedsAnotherPass = false
+    private var prRefreshTask: Task<Void, Never>?
+    private var localRefreshDebounceTask: Task<Void, Never>?
+    private var pullRequestRefreshTimer: Timer?
+    private var repositoryWatcher = TerminalRepositoryWatcher()
+    private var activeWatchTargets: TerminalRepositoryWatchTargets?
+    private var pullRequestCache: [TerminalRepositoryKey: CachedPullRequestState] = [:]
+    private let rightSidebarMinimumWidth: CGFloat = 300
+    static let localRefreshDebounceInterval: Duration = .milliseconds(250)
+    static let pullRequestRefreshInterval: TimeInterval = 300
+    static let defaultRightSidebarSplit: CGFloat = 0.74
+
     init(_ ghostty: Ghostty.App,
          withBaseConfig base: Ghostty.SurfaceConfiguration? = nil,
          withSurfaceTree tree: SplitTree<Ghostty.SurfaceView>? = nil,
@@ -76,6 +108,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         self.derivedConfig = DerivedConfig(ghostty.config)
 
         super.init(ghostty, baseConfig: base, surfaceTree: tree)
+
+        self.tabState.setWorkingDirectory(surfaceTree.first?.pwd)
 
         // Setup our notifications for behaviors
         let center = NotificationCenter.default
@@ -142,6 +176,27 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // Remove all of our notificationcenter subscriptions
         let center = NotificationCenter.default
         center.removeObserver(self)
+        contextRefreshTask?.cancel()
+        localRepositoryRefreshTask?.cancel()
+        localRefreshDebounceTask?.cancel()
+        prRefreshTask?.cancel()
+        pullRequestRefreshTimer?.invalidate()
+        stopRepositoryWatcher()
+    }
+
+    // Convenience accessors - in native tabbing, there's one tabState per controller
+    var selectedTab: TerminalTabState? { tabState }
+
+    var selectedRightSidebarSelection: TerminalInspectorTab {
+        tabState.rightSidebarSelection
+    }
+
+    var isSelectedRightSidebarCollapsed: Bool {
+        tabState.isRightSidebarCollapsed
+    }
+
+    var selectedRightSidebarSplit: CGFloat {
+        tabState.rightSidebarSplit
     }
 
     // MARK: Base Controller Overrides
@@ -182,6 +237,12 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             moveFocusTo: newView,
             moveFocusFrom: oldView,
             undoAction: undoAction)
+    }
+
+    override func pwdDidChange(to: URL?) {
+        super.pwdDidChange(to: to)
+        tabState.setWorkingDirectory(to?.path)
+        refreshFocusedContext(forceLocalRefresh: true, forcePullRequestRefresh: false)
     }
 
     // MARK: Terminal Creation
@@ -492,6 +553,862 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         }
 
         return controller
+    }
+
+    // MARK: - Right Sidebar
+
+    func setSelectedRightSidebarSelection(_ selection: TerminalInspectorTab) {
+        guard tabState.rightSidebarSelection != selection else { return }
+
+        tabState.setRightSidebarSelection(selection)
+        invalidateRestorableState()
+
+        if selection == .changes || selection == .files {
+            refreshLocalRepository()
+        }
+    }
+
+    func setSelectedRightSidebarCollapsed(_ isCollapsed: Bool) {
+        guard tabState.isRightSidebarCollapsed != isCollapsed else { return }
+
+        tabState.setRightSidebarCollapsed(isCollapsed)
+        invalidateRestorableState()
+
+        if !isCollapsed {
+            refreshFocusedContext(forceLocalRefresh: true, forcePullRequestRefresh: false)
+        }
+    }
+
+    func toggleSelectedRightSidebarCollapsed() {
+        setSelectedRightSidebarCollapsed(!isSelectedRightSidebarCollapsed)
+    }
+
+    func setSelectedRightSidebarSplit(_ split: CGFloat) {
+        let clamped = clampRightSidebarSplit(split)
+        guard tabState.rightSidebarSplit != clamped else { return }
+
+        tabState.setRightSidebarSplit(clamped)
+        invalidateRestorableState()
+    }
+
+    func resetSelectedRightSidebarSplit() {
+        setSelectedRightSidebarSplit(Self.defaultRightSidebarSplit)
+    }
+
+    func refreshPullRequestFromUI() {
+        refreshPullRequest(force: true)
+    }
+
+    func refreshPullRequestAfterMutation() {
+        invalidateCurrentPullRequestCache()
+        refreshPullRequest(force: true)
+    }
+
+    func refreshLocalRepositoryFromUI() {
+        refreshLocalRepository()
+    }
+
+    private func currentRepositoryContext() -> TerminalRepositoryContext? {
+        tabState.repositoryContext
+    }
+
+    private func currentRepositoryKey() -> TerminalRepositoryKey? {
+        tabState.repositoryKey
+    }
+
+    private func repositoryIdentityChanged(
+        from previous: TerminalRepositoryContext?,
+        to current: TerminalRepositoryContext
+    ) -> Bool {
+        guard let previous else { return true }
+        return TerminalRepositoryKey(previous) != TerminalRepositoryKey(current)
+    }
+
+    private var diffLoadTask: Task<Void, Never>?
+
+    func openDiffForFile(_ file: TerminalRepositoryChangeFile) {
+        tabState.openDiffForFile(file)
+
+        diffLoadTask?.cancel()
+        diffLoadTask = Task { [weak self] in
+            guard let self else { return }
+            let tab = self.tabState
+            guard let context = tab.repositoryContext else {
+                await MainActor.run { tab.setDiffRawText("") }
+                return
+            }
+
+            do {
+                let rawDiff = try await repositoryService.fetchFileDiffRaw(
+                    for: context,
+                    file: file,
+                    preferredBaseBranch: tab.pullRequestSummary?.baseRefName
+                )
+                guard !Task.isCancelled else { return }
+
+                let fullPath = (context.repositoryRoot as NSString).appendingPathComponent(file.path)
+                let fileContent = try? String(contentsOfFile: fullPath, encoding: .utf8)
+
+                await MainActor.run { tab.setDiffRawText(rawDiff, fileContent: fileContent) }
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run { tab.setDiffRawText("") }
+            }
+        }
+    }
+
+    func closeDiff() {
+        diffLoadTask?.cancel()
+        tabState.closeDiff()
+    }
+
+    private var fileLoadTask: Task<Void, Never>?
+
+    func openFileViewer(relativePath: String) {
+        guard let root = tabState.repositoryRoot else { return }
+        let fullPath = (root as NSString).appendingPathComponent(relativePath)
+        tabState.openFileViewer(path: relativePath)
+
+        fileLoadTask?.cancel()
+        fileLoadTask = Task { [weak self] in
+            guard let self else { return }
+            let tab = self.tabState
+            do {
+                let content = try String(contentsOfFile: fullPath, encoding: .utf8)
+                guard !Task.isCancelled else { return }
+                await MainActor.run { tab.setViewerFileContent(content) }
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run { tab.setViewerFileContent("") }
+            }
+        }
+    }
+
+    func closeFileViewer() {
+        fileLoadTask?.cancel()
+        tabState.closeFileViewer()
+    }
+
+    private var combinedDiffLoadTask: Task<Void, Never>?
+
+    func openAllChangesDiff(section: String) {
+        tabState.openCombinedDiff(title: "\(section) Changes")
+
+        combinedDiffLoadTask?.cancel()
+        combinedDiffLoadTask = Task { [weak self] in
+            guard let self else { return }
+            let tab = self.tabState
+            guard let context = tab.repositoryContext else {
+                await MainActor.run { tab.setCombinedDiffText("") }
+                return
+            }
+
+            do {
+                let rawDiff = try await repositoryService.fetchAllChangesDiff(
+                    for: context,
+                    section: section,
+                    preferredBaseBranch: tab.pullRequestSummary?.baseRefName
+                )
+                guard !Task.isCancelled else { return }
+                await MainActor.run { tab.setCombinedDiffText(rawDiff) }
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run { tab.setCombinedDiffText("") }
+            }
+        }
+    }
+
+    func openCommitDiff(_ commit: TerminalCommitEntry) {
+        tabState.openCombinedDiff(title: "\(commit.shortHash) — \(commit.subject)")
+
+        combinedDiffLoadTask?.cancel()
+        combinedDiffLoadTask = Task { [weak self] in
+            guard let self else { return }
+            let tab = self.tabState
+            guard let root = tab.repositoryRoot else {
+                await MainActor.run { tab.setCombinedDiffText("") }
+                return
+            }
+
+            do {
+                let rawDiff = try await repositoryService.fetchCommitDiff(
+                    repositoryRoot: root,
+                    commitHash: commit.hash
+                )
+                guard !Task.isCancelled else { return }
+                await MainActor.run { tab.setCombinedDiffText(rawDiff) }
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run { tab.setCombinedDiffText("") }
+            }
+        }
+    }
+
+    func closeCombinedDiff() {
+        combinedDiffLoadTask?.cancel()
+        tabState.closeCombinedDiff()
+    }
+
+    func presentFileCommandPalette() {
+        let root: String
+        if let repoRoot = tabState.repositoryRoot {
+            root = repoRoot
+        } else if let wd = tabState.workingDirectory {
+            root = wd
+        } else {
+            return
+        }
+
+        fileCommandPaletteModel = TerminalFileCommandPaletteModel(
+            repositoryRoot: root,
+            onSelect: { [weak self] relativePath in
+                self?.fileCommandPaletteModel = nil
+                self?.openFileViewer(relativePath: relativePath)
+            },
+            onCancel: { [weak self] in
+                self?.fileCommandPaletteModel = nil
+            }
+        )
+    }
+
+    func openDiffForComment(_ thread: TerminalPullRequestReviewThread) {
+        guard let path = thread.path else { return }
+
+        let file = TerminalRepositoryChangeFile(
+            id: "comment-\(thread.id)",
+            path: path,
+            additions: 0,
+            deletions: 0,
+            isBinary: false,
+            badges: [],
+            sectionTitle: "Committed"
+        )
+
+        tabState.activeReviewThread = thread
+        tabState.openDiffForFile(file)
+
+        diffLoadTask?.cancel()
+        diffLoadTask = Task { [weak self] in
+            guard let self else { return }
+            let tab = self.tabState
+            guard let context = tab.repositoryContext else {
+                await MainActor.run { tab.setDiffRawText("") }
+                return
+            }
+
+            do {
+                let rawDiff = try await repositoryService.fetchFileDiffRaw(
+                    for: context,
+                    file: file,
+                    preferredBaseBranch: tab.pullRequestSummary?.baseRefName
+                )
+                guard !Task.isCancelled else { return }
+
+                let fullPath = (context.repositoryRoot as NSString).appendingPathComponent(file.path)
+                let fileContent = try? String(contentsOfFile: fullPath, encoding: .utf8)
+
+                await MainActor.run { tab.setDiffRawText(rawDiff, fileContent: fileContent) }
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run { tab.setDiffRawText("") }
+            }
+        }
+    }
+
+    func addThreadToChat(_ thread: TerminalPullRequestReviewThread) {
+        let comment = TerminalLocalReviewComment(
+            id: UUID(),
+            filePath: thread.path ?? "unknown",
+            startLine: thread.startLine ?? thread.line ?? 0,
+            endLine: thread.line ?? thread.startLine ?? 0,
+            side: thread.diffSide?.lowercased() == "left" ? "old" : "new",
+            text: thread.comments.map { "\($0.authorLogin): \($0.body)" }.joined(separator: "\n")
+        )
+        tabState.addPRThreadComment(comment)
+    }
+
+    func replyToThread(threadID: String, body: String) {
+        guard let context = currentRepositoryContext(),
+              let prNumber = tabState.pullRequestSummary?.number else { return }
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await repositoryService.replyToReviewThread(
+                    for: context,
+                    pullRequestNumber: prNumber,
+                    commentID: threadID,
+                    body: body
+                )
+                await MainActor.run {
+                    self.invalidateCurrentPullRequestCache()
+                    self.refreshPullRequestFromUI()
+                }
+            } catch {
+                // Errors are silently ignored for now; the refresh will show current state
+            }
+        }
+    }
+
+    func resolveThread(threadID: String, resolve: Bool) {
+        guard let context = currentRepositoryContext() else { return }
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                if resolve {
+                    try await repositoryService.resolveReviewThread(for: context, threadID: threadID)
+                } else {
+                    try await repositoryService.unresolveReviewThread(for: context, threadID: threadID)
+                }
+                await MainActor.run {
+                    self.invalidateCurrentPullRequestCache()
+                    self.refreshPullRequestFromUI()
+                }
+            } catch {
+                // Errors are silently ignored; refresh shows current state
+            }
+        }
+    }
+
+    func mergePullRequest(method: TerminalMergeMethod) {
+        guard let context = currentRepositoryContext() else { return }
+
+        tabState.mergeInProgress = true
+        tabState.mergeError = nil
+
+        Task { [weak self] in
+            guard let self else { return }
+            let tab = self.tabState
+            do {
+                try await repositoryService.mergePullRequest(for: context, method: method)
+                await MainActor.run {
+                    tab.mergeInProgress = false
+                    tab.mergeError = nil
+                    self.invalidateCurrentPullRequestCache()
+                    self.refreshPullRequestFromUI()
+                }
+            } catch {
+                await MainActor.run {
+                    tab.mergeInProgress = false
+                    tab.mergeError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    func sendReviewCommentsToChat() -> String? {
+        guard let surface = focusedSurface, let surfaceModel = surface.surfaceModel else {
+            return "No active terminal session. Open a terminal first."
+        }
+
+        let comments = tabState.localReviewComments
+        guard !comments.isEmpty else { return "No review comments to send." }
+
+        var message = "Please fix the following review comments:\n\n"
+        for comment in comments {
+            message += "File: \(comment.filePath)\n"
+            if comment.startLine == comment.endLine {
+                message += "Line \(comment.startLine) (\(comment.side) side)\n"
+            } else {
+                message += "Lines \(comment.startLine)-\(comment.endLine) (\(comment.side) side)\n"
+            }
+            message += "Comment: \(comment.text)\n\n"
+        }
+
+        surfaceModel.sendText(message)
+        return nil
+    }
+
+    @discardableResult
+    func presentPRReviewSheet() -> Bool {
+        let repoRoot = tabState.repositoryRoot
+            ?? tabState.workingDirectory
+            ?? focusedSurface?.pwd
+
+        guard let repoRoot, !repoRoot.isEmpty else {
+            return false
+        }
+
+        let model = TerminalPRReviewSheetModel(
+            repositoryService: repositoryService,
+            repositoryRoot: repoRoot
+        ) { [weak self] selectedPR, resolvedRoot in
+            guard let self else { return }
+            self.openPRForReview(selectedPR, repositoryRoot: resolvedRoot)
+        } onCancel: { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.prReviewSheetModel = nil
+            }
+        }
+
+        prReviewSheetModel = model
+        return true
+    }
+
+    private func openPRForReview(_ pr: TerminalOpenPullRequest, repositoryRoot: String) {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await repositoryService.fetchRemoteBranch(
+                    repositoryRoot: repositoryRoot,
+                    branchName: pr.headRefName
+                )
+
+                let remoteBranch = TerminalBranchDescriptor(
+                    kind: .remote,
+                    reference: "origin/\(pr.headRefName)",
+                    name: pr.headRefName
+                )
+                let result = try await repositoryService.createOrReuseWorktree(
+                    request: TerminalWorktreeRequest(
+                        repositoryRoot: repositoryRoot,
+                        selection: .existing(remoteBranch)
+                    )
+                )
+
+                await MainActor.run {
+                    self.prReviewSheetModel = nil
+
+                    var config = Ghostty.SurfaceConfiguration()
+                    config.workingDirectory = result.workingDirectory
+                    if let newController = Self.newTab(
+                        self.ghostty, from: self.window, withBaseConfig: config
+                    ) {
+                        newController.tabState.isReviewMode = true
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    if let model = self.prReviewSheetModel {
+                        model.isOpening = false
+                        model.errorMessage = error.localizedDescription
+                    }
+                }
+            }
+        }
+    }
+
+    func submitReview(event: TerminalReviewEvent) {
+        guard let nodeID = tabState.pullRequestSummary?.nodeID else { return }
+        guard let context = currentRepositoryContext() else { return }
+
+        let body = tabState.reviewBodyText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let comments = tabState.localReviewComments
+
+        tabState.isSubmittingReview = true
+        tabState.reviewSubmitError = nil
+
+        Task { [weak self] in
+            guard let self else { return }
+            let tab = self.tabState
+            do {
+                try await repositoryService.submitPullRequestReview(
+                    for: context,
+                    nodeID: nodeID,
+                    event: event,
+                    body: body.isEmpty ? nil : body,
+                    comments: comments
+                )
+                await MainActor.run {
+                    tab.isSubmittingReview = false
+                    tab.reviewSubmitError = nil
+                    tab.clearReviewComments()
+                    tab.reviewBodyText = ""
+                    self.invalidateCurrentPullRequestCache()
+                    self.refreshPullRequestFromUI()
+                }
+            } catch {
+                await MainActor.run {
+                    tab.isSubmittingReview = false
+                    tab.reviewSubmitError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    @discardableResult
+    func presentWorktreeSheet() -> Bool {
+        let initialRepositoryRoot = tabState.repositoryRoot
+        let initialBaseBranch = tabState.branchName
+        let model = TerminalWorktreeSheetModel(
+            repositoryService: repositoryService,
+            initialRepositoryRoot: initialRepositoryRoot,
+            initialBaseBranchName: initialBaseBranch
+        ) { [weak self] result in
+            Task { @MainActor [weak self] in
+                self?.worktreeSheetModel = nil
+                guard let self else { return }
+
+                var config = Ghostty.SurfaceConfiguration()
+                config.workingDirectory = result.workingDirectory
+                _ = Self.newTab(self.ghostty, from: self.window, withBaseConfig: config)
+            }
+        } onCancel: { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.worktreeSheetModel = nil
+            }
+        }
+
+        worktreeSheetModel = model
+        return true
+    }
+
+    // MARK: Decoupled Refresh
+
+    private func restartPullRequestRefreshTimer() {
+        pullRequestRefreshTimer?.invalidate()
+
+        guard window?.isKeyWindow ?? false else { return }
+
+        pullRequestRefreshTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.pullRequestRefreshInterval,
+            repeats: true
+        ) { [weak self] _ in
+            self?.refreshPullRequest(force: false)
+        }
+    }
+
+    private func refreshFocusedContext(
+        forceLocalRefresh: Bool = true,
+        forcePullRequestRefresh: Bool = false
+    ) {
+        let workingDirectory = focusedSurface?.pwd ?? tabState.workingDirectory
+        tabState.setWorkingDirectory(workingDirectory)
+
+        contextRefreshTask?.cancel()
+        contextRefreshTask = Task { [weak self] in
+            guard let self else { return }
+
+            let resolvedContext: TerminalRepositoryContext
+            do {
+                resolvedContext = try await repositoryService.resolveContext(for: workingDirectory)
+            } catch {
+                guard !Task.isCancelled else { return }
+
+                let message = (error as? LocalizedError)?.localizedDescription ?? error.localizedDescription
+                await MainActor.run {
+                    let hadContext = self.tabState.repositoryContext != nil
+                    self.tabState.updateRepositoryContext(nil)
+                    if hadContext {
+                        self.tabState.resetRepositoryScopedState()
+                    }
+                    self.stopRepositoryWatcher()
+                    self.tabState.clearLocalRepositoryState(message: message)
+                    self.tabState.clearPullRequestState(message: message)
+                }
+                return
+            }
+
+            guard !Task.isCancelled else { return }
+
+            await MainActor.run {
+                let previousContext = self.tabState.repositoryContext
+                let didChangeContext = self.repositoryIdentityChanged(
+                    from: previousContext,
+                    to: resolvedContext
+                )
+                if didChangeContext {
+                    self.tabState.resetRepositoryScopedState()
+                }
+                self.tabState.updateRepositoryContext(resolvedContext)
+
+                if self.window?.isKeyWindow ?? false {
+                    self.installRepositoryWatcher(for: resolvedContext)
+                }
+
+                if didChangeContext || forceLocalRefresh || self.tabState.changeSummary == nil {
+                    self.refreshLocalRepository()
+                }
+
+                if didChangeContext || forcePullRequestRefresh || self.tabState.pullRequestLastUpdatedAt == nil {
+                    self.refreshPullRequest(force: forcePullRequestRefresh)
+                } else {
+                    self.refreshPullRequest(force: false)
+                }
+            }
+        }
+    }
+
+    private func installRepositoryWatcher(for context: TerminalRepositoryContext) {
+        let key = TerminalRepositoryKey(context)
+        Task { [weak self] in
+            guard let self else { return }
+
+            let watchTargets: TerminalRepositoryWatchTargets
+            do {
+                watchTargets = try await repositoryService.resolveWatchTargets(for: context)
+            } catch {
+                return
+            }
+
+            guard !Task.isCancelled else { return }
+
+            await MainActor.run {
+                guard self.currentRepositoryKey() == key else { return }
+                guard self.activeWatchTargets != watchTargets else { return }
+
+                self.repositoryWatcher.start(paths: watchTargets.watchedPaths) { [weak self] in
+                    self?.scheduleLocalRepositoryRefreshDebounced()
+                }
+                self.activeWatchTargets = watchTargets
+            }
+        }
+    }
+
+    private func stopRepositoryWatcher() {
+        repositoryWatcher.stop()
+        activeWatchTargets = nil
+        localRefreshDebounceTask?.cancel()
+        localRefreshDebounceTask = nil
+    }
+
+    private func scheduleLocalRepositoryRefreshDebounced() {
+        guard window?.isKeyWindow ?? false else { return }
+
+        localRefreshDebounceTask?.cancel()
+        localRefreshDebounceTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.localRefreshDebounceInterval)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.refreshFocusedContext(forceLocalRefresh: true, forcePullRequestRefresh: false)
+            }
+        }
+    }
+
+    private func refreshLocalRepository() {
+        guard let context = currentRepositoryContext() else { return }
+        let key = TerminalRepositoryKey(context)
+
+        if localRepositoryRefreshKey == key,
+           let localRepositoryRefreshTask,
+           !localRepositoryRefreshTask.isCancelled {
+            localRepositoryRefreshNeedsAnotherPass = true
+            return
+        }
+
+        if localRepositoryRefreshKey != key {
+            localRepositoryRefreshTask?.cancel()
+            localRepositoryRefreshNeedsAnotherPass = false
+        }
+        localRepositoryRefreshKey = key
+        tabState.beginLocalRepositoryRefresh()
+
+        let preferredBaseBranch =
+            tabState.pullRequestSummary?.baseRefName ??
+            pullRequestCache[TerminalRepositoryKey(context)]?.summary?.baseRefName
+        localRepositoryRefreshTask = Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                let state = try await repositoryService.fetchLocalRepositoryState(
+                    for: context,
+                    preferredBaseBranch: preferredBaseBranch
+                )
+                guard !Task.isCancelled else {
+                    await MainActor.run {
+                        self.finishLocalRepositoryRefresh(for: key)
+                    }
+                    return
+                }
+
+                let fileTree = FileTreeNode.buildTree(
+                    from: state.filePaths,
+                    rootName: context.repositoryName
+                )
+
+                await MainActor.run {
+                    if self.currentRepositoryKey() == key {
+                        self.tabState.applyLocalRepositoryState(
+                            changeSummary: state.changeSummary,
+                            commitEntries: state.commitEntries,
+                            fileTree: fileTree
+                        )
+                    }
+                    self.finishLocalRepositoryRefresh(for: key)
+                }
+            } catch {
+                guard !Task.isCancelled else {
+                    await MainActor.run {
+                        self.finishLocalRepositoryRefresh(for: key)
+                    }
+                    return
+                }
+
+                await MainActor.run {
+                    if self.currentRepositoryKey() == key {
+                        self.tabState.setLocalRepositoryError(error.localizedDescription)
+                    }
+                    self.finishLocalRepositoryRefresh(for: key)
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func finishLocalRepositoryRefresh(for key: TerminalRepositoryKey) {
+        guard localRepositoryRefreshKey == key else { return }
+
+        localRepositoryRefreshTask = nil
+        localRepositoryRefreshKey = nil
+
+        let needsAnotherPass = localRepositoryRefreshNeedsAnotherPass
+        localRepositoryRefreshNeedsAnotherPass = false
+
+        if needsAnotherPass, currentRepositoryKey() == key {
+            refreshLocalRepository()
+        }
+    }
+
+    private func refreshPullRequest(force: Bool) {
+        guard let context = currentRepositoryContext() else { return }
+        let key = TerminalRepositoryKey(context)
+        let cached = pullRequestCache[key]
+
+        if let cached {
+            tabState.applyPullRequestState(
+                summary: cached.summary,
+                checks: cached.checks,
+                threads: cached.threads,
+                message: cached.message,
+                statusMessage: cached.statusMessage,
+                refreshedAt: cached.refreshedAt
+            )
+
+            if !force,
+               Date().timeIntervalSince(cached.refreshedAt) < Self.pullRequestRefreshInterval {
+                return
+            }
+        }
+
+        tabState.beginPullRequestRefresh()
+        prRefreshTask?.cancel()
+        prRefreshTask = Task { [weak self] in
+            guard let self else { return }
+
+            let summary: TerminalPullRequestSummary
+            do {
+                summary = try await repositoryService.fetchPullRequestSummary(for: context)
+            } catch {
+                guard !Task.isCancelled else { return }
+
+                let cachedMessage = cached?.summary != nil ? cached?.message : error.localizedDescription
+                let refreshedAt = cached?.refreshedAt ?? Date()
+
+                await MainActor.run {
+                    guard self.currentRepositoryKey() == key else { return }
+                    self.tabState.applyPullRequestState(
+                        summary: cached?.summary,
+                        checks: cached?.checks ?? [],
+                        threads: cached?.threads ?? [],
+                        message: cachedMessage,
+                        statusMessage: cached?.summary != nil ? error.localizedDescription : nil,
+                        refreshedAt: refreshedAt
+                    )
+                }
+
+                if cached?.summary == nil {
+                    pullRequestCache[key] = CachedPullRequestState(
+                        summary: nil,
+                        checks: [],
+                        threads: [],
+                        message: error.localizedDescription,
+                        statusMessage: nil,
+                        refreshedAt: Date()
+                    )
+                }
+                return
+            }
+
+            guard !Task.isCancelled else { return }
+
+            async let checksResult: Result<[TerminalPullRequestCheck], Error> = {
+                do {
+                    return .success(try await self.repositoryService.fetchPullRequestChecks(for: context))
+                } catch {
+                    return .failure(error)
+                }
+            }()
+            async let threadsResult: Result<[TerminalPullRequestReviewThread], Error> = {
+                do {
+                    return .success(try await self.repositoryService.fetchReviewThreads(
+                        for: context,
+                        pullRequestNumber: summary.number
+                    ))
+                } catch {
+                    return .failure(error)
+                }
+            }()
+
+            let checks: [TerminalPullRequestCheck]
+            let threads: [TerminalPullRequestReviewThread]
+            var statusMessage: String?
+
+            switch await checksResult {
+            case .success(let value):
+                checks = value.sorted {
+                    if $0.sortPriority == $1.sortPriority {
+                        return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                    }
+                    return $0.sortPriority < $1.sortPriority
+                }
+            case .failure(let error):
+                checks = cached?.checks ?? []
+                statusMessage = error.localizedDescription
+            }
+
+            switch await threadsResult {
+            case .success(let value):
+                threads = value.sorted { $0.updatedAt > $1.updatedAt }
+            case .failure(let error):
+                threads = cached?.threads ?? []
+                if statusMessage == nil {
+                    statusMessage = error.localizedDescription
+                }
+            }
+
+            guard !Task.isCancelled else { return }
+
+            let refreshedAt = Date()
+            let newCachedState = CachedPullRequestState(
+                summary: summary,
+                checks: checks,
+                threads: threads,
+                message: nil,
+                statusMessage: statusMessage,
+                refreshedAt: refreshedAt
+            )
+            pullRequestCache[key] = newCachedState
+
+            await MainActor.run {
+                guard self.currentRepositoryKey() == key else { return }
+                self.tabState.applyPullRequestState(
+                    summary: summary,
+                    checks: checks,
+                    threads: threads,
+                    statusMessage: statusMessage,
+                    refreshedAt: refreshedAt
+                )
+            }
+        }
+    }
+
+    private func invalidateCurrentPullRequestCache() {
+        guard let key = tabState.repositoryKey else { return }
+        pullRequestCache.removeValue(forKey: key)
+    }
+
+    private func clampRightSidebarSplit(_ proposed: CGFloat) -> CGFloat {
+        guard let window else {
+            return min(max(proposed, 0.3), 0.9)
+        }
+
+        let availableWidth = max(
+            window.contentLayoutRect.width - 1,
+            rightSidebarMinimumWidth + 320
+        )
+        let maxSplit = max(0.3, min(0.9, 1 - (rightSidebarMinimumWidth / availableWidth)))
+        return min(max(proposed, 0.3), maxSplit)
     }
 
     // MARK: - Methods
@@ -1039,7 +1956,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         // Initialize our content view to the SwiftUI root
         window.contentView = TerminalViewContainer {
-            TerminalView(ghostty: ghostty, viewModel: self, delegate: self)
+            TerminalWindowView(controller: self)
         }
 
         // If we have a default size, we want to apply it.
@@ -1125,6 +2042,12 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     override func windowWillClose(_ notification: Notification) {
         super.windowWillClose(notification)
         self.relabelTabs()
+        contextRefreshTask?.cancel()
+        localRepositoryRefreshTask?.cancel()
+        localRefreshDebounceTask?.cancel()
+        prRefreshTask?.cancel()
+        pullRequestRefreshTimer?.invalidate()
+        stopRepositoryWatcher()
 
         // If we remove a window, we reset the cascade point to the key window so that
         // the next window cascade's from that one.
@@ -1160,11 +2083,20 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         super.windowDidBecomeKey(notification)
         self.relabelTabs()
         self.fixTabBar()
+        restartPullRequestRefreshTimer()
+        refreshFocusedContext(forceLocalRefresh: true, forcePullRequestRefresh: false)
         terminalViewContainer?.updateGlassTintOverlay(isKeyWindow: true)
     }
 
     override func windowDidResignKey(_ notification: Notification) {
         super.windowDidResignKey(notification)
+        pullRequestRefreshTimer?.invalidate()
+        contextRefreshTask?.cancel()
+        localRepositoryRefreshTask?.cancel()
+        localRefreshDebounceTask?.cancel()
+        prRefreshTask?.cancel()
+        stopRepositoryWatcher()
+
         terminalViewContainer?.updateGlassTintOverlay(isKeyWindow: false)
     }
 
@@ -1359,6 +2291,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         focusedSurface.$backgroundColor
             .sink { [weak self, weak focusedSurface] _ in self?.syncAppearanceOnPropertyChange(focusedSurface) }
             .store(in: &surfaceAppearanceCancellables)
+
+        refreshFocusedContext(forceLocalRefresh: true, forcePullRequestRefresh: false)
     }
 
     private func syncAppearanceOnPropertyChange(_ surface: Ghostty.SurfaceView?) {
@@ -1555,7 +2489,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         init(_ config: Ghostty.Config) {
             self.backgroundColor = config.backgroundColor
             self.macosWindowButtons = config.macosWindowButtons
-            self.macosTitlebarStyle = config.macosTitlebarStyle
+            self.macosTitlebarStyle = config.macosTitlebarStyle == "tabs" ? "transparent" : config.macosTitlebarStyle
             self.maximize = config.maximize
             self.windowPositionX = config.windowPositionX
             self.windowPositionY = config.windowPositionY

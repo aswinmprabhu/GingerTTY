@@ -1,0 +1,384 @@
+import Foundation
+
+enum TerminalInspectorTab: String, CaseIterable, Codable, Identifiable {
+    case changes
+    case comments
+    case checks
+    case files
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .changes:
+            return "Changes"
+        case .comments:
+            return "Comments"
+        case .checks:
+            return "Checks"
+        case .files:
+            return "Files"
+        }
+    }
+}
+
+final class TerminalTabState: ObservableObject, Identifiable {
+    let id: UUID
+
+    // MARK: Repository identity
+
+    @Published private(set) var workingDirectory: String?
+    @Published private(set) var repositoryContext: TerminalRepositoryContext?
+
+    var repositoryRoot: String? { repositoryContext?.repositoryRoot }
+    var branchName: String? { repositoryContext?.branchName }
+    var repositoryKey: TerminalRepositoryKey? { repositoryContext.map(TerminalRepositoryKey.init) }
+
+    // MARK: Local repository state
+
+    @Published private(set) var changeSummary: TerminalRepositoryChangeSummary?
+    @Published private(set) var changeSummaryMessage: String?
+    @Published private(set) var commitEntries: [TerminalCommitEntry] = []
+    @Published private(set) var fileTree: FileTreeNode?
+    @Published private(set) var localRepositoryLastUpdatedAt: Date?
+    @Published private(set) var isLocalRepositoryRefreshing: Bool = false
+
+    // MARK: Pull request state
+
+    @Published private(set) var pullRequestSummary: TerminalPullRequestSummary?
+    @Published private(set) var pullRequestChecks: [TerminalPullRequestCheck] = []
+    @Published private(set) var reviewThreads: [TerminalPullRequestReviewThread] = []
+    @Published private(set) var pullRequestMessage: String?
+    @Published private(set) var pullRequestStatusMessage: String?
+    @Published private(set) var pullRequestLastUpdatedAt: Date?
+    @Published private(set) var isPullRequestRefreshing: Bool = false
+
+    var hasPullRequestContent: Bool { pullRequestSummary != nil }
+    var hasChangeSummary: Bool { changeSummary != nil }
+
+    // MARK: Sidebar UI state
+
+    @Published private(set) var rightSidebarSelection: TerminalInspectorTab
+    @Published private(set) var isRightSidebarCollapsed: Bool
+    @Published private(set) var rightSidebarSplit: CGFloat
+
+    // MARK: Diff viewer state
+
+    @Published var selectedDiffFile: TerminalRepositoryChangeFile?
+    @Published var diffRows: [SplitDiffRow]?
+    @Published var diffRawText: String?
+    @Published var diffFileContent: String?
+    @Published var isDiffLoading: Bool = false
+
+    // MARK: Combined (multi-file) diff state
+
+    @Published var combinedDiffTitle: String?
+    @Published var combinedDiffRawText: String?
+    @Published var isCombinedDiffLoading: Bool = false
+
+    // MARK: Review comments
+
+    @Published var localReviewComments: [TerminalLocalReviewComment] = []
+    @Published var prThreadReviewComments: [TerminalLocalReviewComment] = []
+    @Published var activeReviewThread: TerminalPullRequestReviewThread?
+
+    // MARK: PR review mode
+
+    @Published var isReviewMode: Bool = false
+    @Published var reviewBodyText: String = ""
+    @Published var isSubmittingReview: Bool = false
+    @Published var reviewSubmitError: String?
+
+    // MARK: Merge state
+
+    @Published var mergeInProgress: Bool = false
+    @Published var mergeError: String?
+
+    // MARK: Pending comment state (driven by WKWebView line selection)
+
+    @Published var showCommentBox: Bool = false
+    @Published var pendingSelectionStart: Int?
+    @Published var pendingSelectionEnd: Int?
+    @Published var pendingSelectionSide: String?
+    @Published var pendingCommentText: String = ""
+
+    // MARK: File viewer state
+
+    @Published var viewerFilePath: String?
+    @Published var viewerFileContent: String?
+    @Published var isViewerLoading: Bool = false
+
+    @Published var highlightedFilePath: String?
+
+    // MARK: Init
+
+    init(
+        id: UUID = UUID(),
+        workingDirectory: String? = nil
+    ) {
+        self.id = id
+        self.workingDirectory = workingDirectory
+        self.rightSidebarSelection = .changes
+        self.isRightSidebarCollapsed = false
+        self.rightSidebarSplit = 0.74
+    }
+
+    // MARK: Repository context
+
+    func updateRepositoryContext(_ context: TerminalRepositoryContext?) {
+        repositoryContext = context
+        if let context {
+            workingDirectory = context.workingDirectory
+        }
+    }
+
+    func setWorkingDirectory(_ newValue: String?) {
+        workingDirectory = newValue
+    }
+
+    func resetRepositoryScopedState() {
+        clearLocalRepositoryState()
+        clearPullRequestState()
+        clearReviewComments()
+        clearPRThreadComments()
+        activeReviewThread = nil
+        reviewBodyText = ""
+        reviewSubmitError = nil
+        mergeInProgress = false
+        mergeError = nil
+        showCommentBox = false
+        pendingSelectionStart = nil
+        pendingSelectionEnd = nil
+        pendingSelectionSide = nil
+        pendingCommentText = ""
+        closeDiff()
+        closeCombinedDiff()
+        closeFileViewer()
+        highlightedFilePath = nil
+    }
+
+    // MARK: Local repository state
+
+    func beginLocalRepositoryRefresh() {
+        isLocalRepositoryRefreshing = true
+    }
+
+    func applyLocalRepositoryState(
+        changeSummary: TerminalRepositoryChangeSummary,
+        commitEntries: [TerminalCommitEntry],
+        fileTree: FileTreeNode?,
+        refreshedAt: Date = Date()
+    ) {
+        self.changeSummary = changeSummary
+        self.changeSummaryMessage = nil
+        self.commitEntries = commitEntries
+        self.fileTree = fileTree
+        self.localRepositoryLastUpdatedAt = refreshedAt
+        self.isLocalRepositoryRefreshing = false
+
+        if let highlightedFilePath,
+           let fileTree,
+           !fileTree.containsFile(relativePath: highlightedFilePath) {
+            self.highlightedFilePath = nil
+        }
+    }
+
+    func setLocalRepositoryError(_ message: String) {
+        changeSummary = nil
+        changeSummaryMessage = message
+        commitEntries = []
+        fileTree = nil
+        isLocalRepositoryRefreshing = false
+    }
+
+    func clearLocalRepositoryState(message: String? = nil) {
+        changeSummary = nil
+        changeSummaryMessage = message
+        commitEntries = []
+        fileTree = nil
+        localRepositoryLastUpdatedAt = nil
+        isLocalRepositoryRefreshing = false
+    }
+
+    // MARK: Pull request state
+
+    func beginPullRequestRefresh() {
+        isPullRequestRefreshing = true
+    }
+
+    func applyPullRequestState(
+        summary: TerminalPullRequestSummary?,
+        checks: [TerminalPullRequestCheck],
+        threads: [TerminalPullRequestReviewThread],
+        message: String? = nil,
+        statusMessage: String? = nil,
+        refreshedAt: Date = Date()
+    ) {
+        pullRequestSummary = summary
+        pullRequestChecks = checks
+        reviewThreads = threads
+        pullRequestMessage = message
+        pullRequestStatusMessage = statusMessage
+        pullRequestLastUpdatedAt = refreshedAt
+        isPullRequestRefreshing = false
+    }
+
+    func setPullRequestError(
+        message: String,
+        preserveExistingData: Bool = false,
+        statusMessage: String? = nil
+    ) {
+        if !preserveExistingData {
+            pullRequestSummary = nil
+            pullRequestChecks = []
+            reviewThreads = []
+        }
+        pullRequestMessage = message
+        pullRequestStatusMessage = statusMessage
+        isPullRequestRefreshing = false
+    }
+
+    func clearPullRequestState(message: String? = nil) {
+        pullRequestSummary = nil
+        pullRequestChecks = []
+        reviewThreads = []
+        pullRequestMessage = message
+        pullRequestStatusMessage = nil
+        pullRequestLastUpdatedAt = nil
+        isPullRequestRefreshing = false
+    }
+
+    // MARK: Sidebar UI
+
+    func setRightSidebarSelection(_ newValue: TerminalInspectorTab) {
+        rightSidebarSelection = newValue
+    }
+
+    func setRightSidebarCollapsed(_ newValue: Bool) {
+        isRightSidebarCollapsed = newValue
+    }
+
+    func setRightSidebarSplit(_ newValue: CGFloat) {
+        rightSidebarSplit = min(max(newValue, 0.2), 0.95)
+    }
+
+    // MARK: Diff viewer
+
+    func openDiffForFile(_ file: TerminalRepositoryChangeFile) {
+        selectedDiffFile = file
+        diffRows = nil
+        diffRawText = nil
+        diffFileContent = nil
+        isDiffLoading = true
+        combinedDiffTitle = nil
+        combinedDiffRawText = nil
+        isCombinedDiffLoading = false
+        viewerFilePath = nil
+        viewerFileContent = nil
+        isViewerLoading = false
+    }
+
+    func setDiffRows(_ rows: [SplitDiffRow]) {
+        diffRows = rows
+        isDiffLoading = false
+    }
+
+    func setDiffRawText(_ text: String, fileContent: String? = nil) {
+        diffRawText = text
+        diffFileContent = fileContent
+        isDiffLoading = false
+    }
+
+    func closeDiff() {
+        selectedDiffFile = nil
+        diffRows = nil
+        diffRawText = nil
+        diffFileContent = nil
+        isDiffLoading = false
+        showCommentBox = false
+        pendingCommentText = ""
+        pendingSelectionStart = nil
+        pendingSelectionEnd = nil
+        pendingSelectionSide = nil
+        activeReviewThread = nil
+    }
+
+    // MARK: File viewer
+
+    func openFileViewer(path: String) {
+        viewerFilePath = path
+        viewerFileContent = nil
+        isViewerLoading = true
+        highlightedFilePath = path
+        rightSidebarSelection = .files
+        if isRightSidebarCollapsed {
+            isRightSidebarCollapsed = false
+        }
+        selectedDiffFile = nil
+        diffRawText = nil
+        diffFileContent = nil
+        isDiffLoading = false
+        combinedDiffTitle = nil
+        combinedDiffRawText = nil
+        isCombinedDiffLoading = false
+    }
+
+    func setViewerFileContent(_ content: String) {
+        viewerFileContent = content
+        isViewerLoading = false
+    }
+
+    func closeFileViewer() {
+        viewerFilePath = nil
+        viewerFileContent = nil
+        isViewerLoading = false
+    }
+
+    // MARK: Combined diff
+
+    func openCombinedDiff(title: String) {
+        combinedDiffTitle = title
+        combinedDiffRawText = nil
+        isCombinedDiffLoading = true
+        selectedDiffFile = nil
+        diffRawText = nil
+        diffFileContent = nil
+        isDiffLoading = false
+        viewerFilePath = nil
+        viewerFileContent = nil
+        isViewerLoading = false
+    }
+
+    func setCombinedDiffText(_ text: String) {
+        combinedDiffRawText = text
+        isCombinedDiffLoading = false
+    }
+
+    func closeCombinedDiff() {
+        combinedDiffTitle = nil
+        combinedDiffRawText = nil
+        isCombinedDiffLoading = false
+    }
+
+    // MARK: Review comments
+
+    func addReviewComment(_ comment: TerminalLocalReviewComment) {
+        localReviewComments.append(comment)
+    }
+
+    func removeReviewComment(id: UUID) {
+        localReviewComments.removeAll { $0.id == id }
+    }
+
+    func clearReviewComments() {
+        localReviewComments.removeAll()
+    }
+
+    func addPRThreadComment(_ comment: TerminalLocalReviewComment) {
+        prThreadReviewComments.append(comment)
+    }
+
+    func clearPRThreadComments() {
+        prThreadReviewComments.removeAll()
+    }
+}
