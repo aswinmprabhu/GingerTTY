@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 import GhosttyKit
 
@@ -18,6 +19,8 @@ extension Ghostty {
         /// True if the configuration is loaded
         var loaded: Bool { config != nil }
 
+        private let customConfig: CustomConfig
+
         /// Return the errors found while loading the configuration.
         var errors: [String] {
             guard let cfg = self.config else { return [] }
@@ -30,19 +33,36 @@ extension Ghostty {
                 diags.append(message)
             }
 
-            return diags
+            return Self.filteredErrors(diags)
+        }
+        static func filteredErrors(_ errors: [String]) -> [String] {
+            errors.filter { error in
+                !error.contains("macos-tab-bar") && !error.contains("gingertty-")
+            }
         }
 
-        init(config: ghostty_config_t?) {
+        var macosTabBarMode: MacOSTabBarMode { customConfig.macosTabBarMode }
+
+        var usesCustomMacOSTabBar: Bool { macosTabBarMode.usesCustomTabBar }
+
+
+        init(config: ghostty_config_t?, customConfig: CustomConfig) {
             self.config = config
+            self.customConfig = customConfig
         }
 
         convenience init(at path: String? = nil, finalize: Bool = true) {
-            self.init(config: Self.loadConfig(at: path, finalize: finalize))
+            self.init(
+                config: Self.loadConfig(at: path, finalize: finalize),
+                customConfig: Self.loadCustomConfig(at: path)
+            )
         }
 
-        convenience init(clone config: ghostty_config_t) {
-            self.init(config: ghostty_config_clone(config))
+        convenience init(clone config: ghostty_config_t, preferredPath: String? = nil) {
+            self.init(
+                config: ghostty_config_clone(config),
+                customConfig: Self.loadCustomConfig(at: preferredPath)
+            )
         }
 
         deinit {
@@ -102,6 +122,10 @@ extension Ghostty {
             }
 
             return cfg
+        }
+
+        static private func loadCustomConfig(at path: String?) -> CustomConfig {
+            CustomConfig(preferredPath: path)
         }
 
 #if os(macOS)
@@ -354,14 +378,18 @@ extension Ghostty {
             return MacOSWindowButtons(rawValue: str) ?? defaultValue
         }
 
-        var macosTitlebarStyle: String {
+        var macosTitlebarStyleRaw: String {
             let defaultValue = "transparent"
             guard let config = self.config else { return defaultValue }
             var v: UnsafePointer<Int8>?
             let key = "macos-titlebar-style"
             guard ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8))) else { return defaultValue }
             guard let ptr = v else { return defaultValue }
-            let value = String(cString: ptr)
+            return String(cString: ptr)
+        }
+
+        var macosTitlebarStyle: String {
+            let value = macosTitlebarStyleRaw
             return value == "tabs" ? "transparent" : value
         }
 
@@ -732,6 +760,229 @@ extension Ghostty {
 // MARK: Configuration Enums
 
 extension Ghostty.Config {
+    enum MacOSTabBarMode: String, Equatable {
+        case vertical
+        case horizontal
+        case native
+
+        var usesCustomTabBar: Bool {
+            self == .vertical
+        }
+    }
+
+    struct CustomConfig {
+        let macosTabBarMode: MacOSTabBarMode
+
+        init(
+            preferredPath: String? = nil,
+            environment: [String: String] = ProcessInfo.processInfo.environment,
+            fileManager: FileManager = .default
+        ) {
+            let parser = Parser(
+                preferredPath: preferredPath,
+                environment: environment,
+                fileManager: fileManager
+            )
+            self.macosTabBarMode = parser.loadTabBarMode()
+        }
+
+        private struct Parser {
+            let preferredPath: String?
+            let environment: [String: String]
+            let fileManager: FileManager
+
+            func loadTabBarMode() -> MacOSTabBarMode {
+                var tabBarMode: MacOSTabBarMode = .vertical
+                var visitedPaths: Set<String> = []
+
+                for url in rootConfigFiles() {
+                    loadFile(
+                        at: url,
+                        tabBarMode: &tabBarMode,
+                        visitedPaths: &visitedPaths
+                    )
+                }
+
+                return tabBarMode
+            }
+
+            private func rootConfigFiles() -> [URL] {
+                if let preferredPath = normalizedPath(preferredPath) {
+                    return [resolvedURL(for: preferredPath, relativeTo: nil)]
+                }
+
+                if let configPath = normalizedPath(environment["GHOSTTY_CONFIG_PATH"]) {
+                    return [resolvedURL(for: configPath, relativeTo: nil)]
+                }
+
+                let xdgConfigHome = normalizedPath(environment["XDG_CONFIG_HOME"])
+                    ?? "\(homeDirectoryPath)/.config"
+                // Ghostty's macOS config path is rooted at the upstream bundle identifier
+                // rather than the Xcode product bundle identifier we use for debug builds.
+                let appSupportDirectory = "\(homeDirectoryPath)/Library/Application Support/com.mitchellh.ghostty"
+
+                return [
+                    URL(fileURLWithPath: xdgConfigHome, isDirectory: true)
+                        .appendingPathComponent("ghostty/config"),
+                    URL(fileURLWithPath: xdgConfigHome, isDirectory: true)
+                        .appendingPathComponent("ghostty/config.ghostty"),
+                    URL(fileURLWithPath: appSupportDirectory, isDirectory: true)
+                        .appendingPathComponent("config"),
+                    URL(fileURLWithPath: appSupportDirectory, isDirectory: true)
+                        .appendingPathComponent("config.ghostty"),
+                ]
+            }
+
+            private var homeDirectoryPath: String {
+                if let home = normalizedPath(environment["HOME"]) {
+                    return NSString(string: home).expandingTildeInPath
+                }
+
+                return fileManager.homeDirectoryForCurrentUser.path
+            }
+
+            private func loadFile(
+                at url: URL,
+                tabBarMode: inout MacOSTabBarMode,
+                visitedPaths: inout Set<String>
+            ) {
+                let path = url.standardizedFileURL.path
+                guard visitedPaths.insert(path).inserted else { return }
+                guard fileManager.fileExists(atPath: path) else { return }
+                guard let contents = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+
+                var includedFiles: [IncludedFile] = []
+                for rawLine in contents.components(separatedBy: .newlines) {
+                    guard let entry = parseLine(rawLine) else { continue }
+
+                    if entry.key == "config-file" {
+                        if let include = parseIncludedFile(from: entry.value, relativeTo: url) {
+                            includedFiles.append(include)
+                        }
+                        continue
+                    }
+
+                    guard entry.key == "macos-tab-bar" || entry.key.hasPrefix("gingertty-") else {
+                        continue
+                    }
+
+                    if entry.key == "macos-tab-bar",
+                       let parsedMode = MacOSTabBarMode(rawValue: normalizedValue(entry.value)) {
+                        tabBarMode = parsedMode
+                    }
+                }
+
+                for includedFile in includedFiles {
+                    if !includedFile.isOptional || fileManager.fileExists(atPath: includedFile.url.path) {
+                        loadFile(
+                            at: includedFile.url,
+                            tabBarMode: &tabBarMode,
+                            visitedPaths: &visitedPaths
+                        )
+                    }
+                }
+            }
+
+            private func parseLine(_ rawLine: String) -> (key: String, value: String)? {
+                let line = stripComments(from: rawLine)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !line.isEmpty, let separatorIndex = line.firstIndex(of: "=") else { return nil }
+
+                let key = line[..<separatorIndex].trimmingCharacters(in: .whitespacesAndNewlines)
+                let value = line[line.index(after: separatorIndex)...]
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !key.isEmpty else { return nil }
+
+                return (key, value)
+            }
+
+            private func stripComments(from line: String) -> String {
+                var result = ""
+                var isQuoted = false
+
+                for character in line {
+                    if character == "\"" {
+                        isQuoted.toggle()
+                    }
+
+                    if character == "#" && !isQuoted {
+                        break
+                    }
+
+                    result.append(character)
+                }
+
+                return result
+            }
+
+            private func parseIncludedFile(
+                from rawValue: String,
+                relativeTo fileURL: URL
+            ) -> IncludedFile? {
+                let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return nil }
+
+                let isQuoted = trimmed.hasPrefix("\"") && trimmed.hasSuffix("\"")
+                var isOptional = false
+                var includePath = trimmed
+                if !isQuoted, includePath.hasPrefix("?") {
+                    isOptional = true
+                    includePath.removeFirst()
+                    includePath = includePath.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+
+                includePath = unquotedValue(includePath)
+                guard !includePath.isEmpty else { return nil }
+
+                return IncludedFile(
+                    url: resolvedURL(
+                        for: includePath,
+                        relativeTo: fileURL.deletingLastPathComponent()
+                    ),
+                    isOptional: isOptional
+                )
+            }
+
+            private func resolvedURL(for path: String, relativeTo baseURL: URL?) -> URL {
+                let expandedPath = NSString(string: path).expandingTildeInPath
+                if expandedPath.hasPrefix("/") {
+                    return URL(fileURLWithPath: expandedPath).standardizedFileURL
+                }
+
+                let rootURL = baseURL
+                    ?? URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true)
+                return rootURL
+                    .appendingPathComponent(expandedPath)
+                    .standardizedFileURL
+            }
+
+            private func normalizedValue(_ value: String) -> String {
+                unquotedValue(value)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+            }
+
+            private func normalizedPath(_ value: String?) -> String? {
+                guard let value else { return nil }
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }
+
+            private func unquotedValue(_ value: String) -> String {
+                guard value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") else {
+                    return value
+                }
+
+                return String(value.dropFirst().dropLast())
+            }
+        }
+
+        private struct IncludedFile {
+            let url: URL
+            let isOptional: Bool
+        }
+    }
+
     enum AutoUpdate: String {
         case off
         case check

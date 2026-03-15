@@ -20,6 +20,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         guard let appDelegate = NSApp.delegate as? AppDelegate else { return defaultValue }
         let config = appDelegate.ghostty.config
+        let titlebarStyle = config.macosTitlebarStyleRaw
 
         // If we have no window decorations, there's no reason to do anything but
         // the default titlebar (because there will be no titlebar).
@@ -27,24 +28,30 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             return defaultValue
         }
 
-        let nib = switch config.macosTitlebarStyle {
-        case "native": "Terminal"
-        case "hidden": "TerminalHiddenTitlebar"
-        case "transparent": "TerminalTransparentTitlebar"
+        switch titlebarStyle {
+        case "native":
+            return "Terminal"
+        case "hidden":
+            return "TerminalHiddenTitlebar"
+        case "transparent":
+            return "TerminalTransparentTitlebar"
         case "tabs":
+            if config.usesCustomMacOSTabBar {
+                return "Terminal"
+            }
+
 #if compiler(>=6.2)
             if #available(macOS 26.0, *) {
-                "TerminalTabsTitlebarTahoe"
+                return "TerminalTabsTitlebarTahoe"
             } else {
-                "TerminalTabsTitlebarVentura"
+                return "TerminalTabsTitlebarVentura"
             }
 #else
-            "TerminalTabsTitlebarVentura"
+            return "TerminalTabsTitlebarVentura"
 #endif
-        default: defaultValue
+        default:
+            return defaultValue
         }
-
-        return nib
     }
 
     /// This is set to true when we care about frame changes. This is a small optimization since
@@ -75,6 +82,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     @Published var worktreeSheetModel: TerminalWorktreeSheetModel?
     @Published var prReviewSheetModel: TerminalPRReviewSheetModel?
     @Published var fileCommandPaletteModel: TerminalFileCommandPaletteModel?
+    @Published var tabGroupVersion: UInt = 0
 
     let repositoryService = TerminalRepositoryService.shared
     private var contextRefreshTask: Task<Void, Never>?
@@ -1090,6 +1098,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                 await MainActor.run {
                     let hadContext = self.tabState.repositoryContext != nil
                     self.tabState.updateRepositoryContext(nil)
+                    self.markTabGroupChanged()
                     if hadContext {
                         self.tabState.resetRepositoryScopedState()
                     }
@@ -1112,6 +1121,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                     self.tabState.resetRepositoryScopedState()
                 }
                 self.tabState.updateRepositoryContext(resolvedContext)
+                self.markTabGroupChanged()
 
                 if self.window?.isKeyWindow ?? false {
                     self.installRepositoryWatcher(for: resolvedContext)
@@ -1442,7 +1452,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     /// shortcut that activates it (if any). This is called when the key window
     /// changes, when a window is closed, and when tabs are reordered
     /// with the mouse.
-    func relabelTabs() {
+    func relabelTabs(postTabGroupChange: Bool = true) {
         // We only listen for frame changes if we have more than 1 window,
         // otherwise the accessory view doesn't matter.
         tabListenForFrame = window?.tabbedWindows?.count ?? 0 > 1
@@ -1463,6 +1473,15 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                 }
             }
         }
+
+        if postTabGroupChange {
+            markTabGroupChanged()
+        }
+    }
+
+    private func markTabGroupChanged() {
+        tabGroupVersion &+= 1
+        NotificationCenter.default.post(name: .gingerTTYTabGroupDidChange, object: window)
     }
 
     private func fixTabBar() {
@@ -2041,7 +2060,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
     override func windowWillClose(_ notification: Notification) {
         super.windowWillClose(notification)
-        self.relabelTabs()
+        self.relabelTabs(postTabGroupChange: false)
+        self.markTabGroupChanged()
         contextRefreshTask?.cancel()
         localRepositoryRefreshTask?.cancel()
         localRefreshDebounceTask?.cancel()
@@ -2495,6 +2515,10 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             self.windowPositionY = config.windowPositionY
         }
     }
+}
+
+extension Notification.Name {
+    static let gingerTTYTabGroupDidChange = Notification.Name("com.gingertty.tabGroupDidChange")
 }
 
 // MARK: NSMenuItemValidation
