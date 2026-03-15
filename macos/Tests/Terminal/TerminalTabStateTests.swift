@@ -61,6 +61,92 @@ struct TerminalTabStateTests {
         #expect(tab.reviewThreads.first?.isResolved == true)
         #expect(tab.activeReviewThread?.isResolved == true)
     }
+
+    @Test
+    func openFileViewerClearsDiffStateAndStartsLoading() {
+        let tab = TerminalTabState()
+        let file = TerminalRepositoryChangeFile(
+            id: "file-1",
+            path: "Sources/App.swift",
+            additions: 3,
+            deletions: 1,
+            isBinary: false,
+            badges: [],
+            sectionTitle: "Uncommitted"
+        )
+
+        tab.openDiffForFile(file)
+        tab.setDiffRawText("diff --git a/Sources/App.swift b/Sources/App.swift", fileContent: "print(\"old\")")
+        tab.openCombinedDiff(title: "All Changes")
+        tab.openFileViewer(path: "Sources/App.swift")
+
+        #expect(tab.viewerFilePath == "Sources/App.swift")
+        #expect(tab.viewerOriginalContent == nil)
+        #expect(tab.viewerFileContent == nil)
+        #expect(tab.isViewerLoading == true)
+        #expect(tab.isViewerSaving == false)
+        #expect(tab.selectedDiffFile == nil)
+        #expect(tab.combinedDiffTitle == nil)
+    }
+
+    @Test
+    func setViewerDraftContentMarksViewerDirty() {
+        let tab = TerminalTabState()
+
+        tab.openFileViewer(path: "Sources/App.swift")
+        tab.setViewerLoadedContent("print(\"hello\")\n")
+
+        #expect(tab.isViewerDirty == false)
+        #expect(tab.canSaveViewerFile == false)
+        #expect(tab.canRevertViewerFile == false)
+
+        tab.setViewerDraftContent("print(\"edited\")\n")
+
+        #expect(tab.viewerFileContent == "print(\"edited\")\n")
+        #expect(tab.viewerOriginalContent == "print(\"hello\")\n")
+        #expect(tab.isViewerDirty == true)
+        #expect(tab.canSaveViewerFile == true)
+        #expect(tab.canRevertViewerFile == true)
+    }
+
+    @Test
+    func completeViewerSavePromotesDraftToOriginal() {
+        let tab = TerminalTabState()
+
+        tab.openFileViewer(path: "Sources/App.swift")
+        tab.setViewerLoadedContent("print(\"hello\")\n")
+        tab.setViewerDraftContent("print(\"edited\")\n")
+        tab.beginViewerSave()
+        tab.completeViewerSave(with: "print(\"edited\")\n")
+
+        #expect(tab.viewerOriginalContent == "print(\"edited\")\n")
+        #expect(tab.viewerFileContent == "print(\"edited\")\n")
+        #expect(tab.isViewerDirty == false)
+        #expect(tab.isViewerSaving == false)
+        #expect(tab.viewerSaveError == nil)
+        #expect(tab.canSaveViewerFile == false)
+    }
+
+    @Test
+    func closeFileViewerClearsViewerEditingState() {
+        let tab = TerminalTabState()
+
+        tab.openFileViewer(path: "Sources/App.swift")
+        tab.setViewerLoadedContent("print(\"hello\")\n")
+        tab.setViewerDraftContent("print(\"edited\")\n")
+        tab.beginViewerSave()
+        tab.setViewerSaveError("Save failed")
+        tab.closeFileViewer()
+
+        #expect(tab.viewerFilePath == nil)
+        #expect(tab.viewerOriginalContent == nil)
+        #expect(tab.viewerFileContent == nil)
+        #expect(tab.isViewerLoading == false)
+        #expect(tab.isViewerSaving == false)
+        #expect(tab.viewerLoadError == nil)
+        #expect(tab.viewerSaveError == nil)
+        #expect(tab.isViewerDirty == false)
+    }
 }
 
 private func makeThread(
