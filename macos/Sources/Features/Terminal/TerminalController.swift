@@ -849,6 +849,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                     body: body
                 )
                 await MainActor.run {
+                    self.tabState.appendOptimisticReply(toThreadID: threadID, body: body)
                     self.invalidateCurrentPullRequestCache()
                     self.refreshPullRequestFromUI()
                 }
@@ -870,6 +871,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                     try await repositoryService.unresolveReviewThread(for: context, threadID: threadID)
                 }
                 await MainActor.run {
+                    self.tabState.setReviewThreadResolved(threadID: threadID, isResolved: resolve)
                     self.invalidateCurrentPullRequestCache()
                     self.refreshPullRequestFromUI()
                 }
@@ -925,6 +927,20 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         }
 
         surfaceModel.sendText(message)
+        return nil
+    }
+
+    func sendPRThreadCommentsToChat(_ text: String) -> String? {
+        guard let surface = focusedSurface, let surfaceModel = surface.surfaceModel else {
+            return "No active terminal session. Open a terminal first."
+        }
+
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "No comments to send." }
+
+        let message = "Please address the following PR review comments:\n\n\(trimmed)\n"
+        surfaceModel.sendText(message)
+        tabState.clearPRThreadComments()
         return nil
     }
 
@@ -1392,6 +1408,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
             await MainActor.run {
                 guard self.currentRepositoryKey() == key else { return }
+                let shouldRefreshLocalRepository =
+                    cached?.summary?.baseRefName != summary.baseRefName ||
+                    (cached?.summary == nil && self.tabState.pullRequestSummary == nil)
                 self.tabState.applyPullRequestState(
                     summary: summary,
                     checks: checks,
@@ -1399,6 +1418,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                     statusMessage: statusMessage,
                     refreshedAt: refreshedAt
                 )
+                if shouldRefreshLocalRepository {
+                    self.refreshLocalRepository()
+                }
             }
         }
     }

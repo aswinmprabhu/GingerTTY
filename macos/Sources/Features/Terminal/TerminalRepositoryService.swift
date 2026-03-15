@@ -641,6 +641,8 @@ actor TerminalRepositoryService {
     static let shared = TerminalRepositoryService()
 
     private let workspaceRoot: URL
+    private var preferredBaseBranchRefreshDates: [String: Date] = [:]
+    private static let preferredBaseBranchRefreshInterval: TimeInterval = 30
 
     private struct PullRequestPayload: Decodable {
         let id: String?
@@ -1044,6 +1046,32 @@ actor TerminalRepositoryService {
         )
     }
 
+    private func refreshPreferredBaseBranchIfNeeded(
+        repositoryRoot: String,
+        preferredBaseBranch: String?
+    ) async {
+        guard let preferredBaseBranch = preferredBaseBranch?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !preferredBaseBranch.isEmpty else {
+            return
+        }
+
+        let standardizedRoot = URL(fileURLWithPath: repositoryRoot).standardizedFileURL.path
+        let refreshKey = "\(standardizedRoot)::\(preferredBaseBranch)"
+        let now = Date()
+
+        if let lastRefresh = preferredBaseBranchRefreshDates[refreshKey],
+           now.timeIntervalSince(lastRefresh) < Self.preferredBaseBranchRefreshInterval {
+            return
+        }
+
+        preferredBaseBranchRefreshDates[refreshKey] = now
+        try? await fetchRemoteBranch(
+            repositoryRoot: repositoryRoot,
+            branchName: preferredBaseBranch
+        )
+    }
+
     func submitPullRequestReview(
         for context: TerminalRepositoryContext,
         nodeID: String,
@@ -1257,6 +1285,10 @@ actor TerminalRepositoryService {
         preferredBaseBranch: String?,
         allowRemoteQueries: Bool = true
     ) async throws -> TerminalRepositoryChangeSummary {
+        await refreshPreferredBaseBranchIfNeeded(
+            repositoryRoot: context.repositoryRoot,
+            preferredBaseBranch: preferredBaseBranch
+        )
         let baseBranchName = try await resolveBaseBranchName(
             for: context,
             preferredBaseBranch: preferredBaseBranch,
@@ -1283,6 +1315,10 @@ actor TerminalRepositoryService {
         let repositoryRoot = context.repositoryRoot
 
         if section == "Committed" {
+            await refreshPreferredBaseBranchIfNeeded(
+                repositoryRoot: repositoryRoot,
+                preferredBaseBranch: preferredBaseBranch
+            )
             let baseBranchName = try await resolveBaseBranchName(
                 for: context,
                 preferredBaseBranch: preferredBaseBranch,
@@ -1317,6 +1353,10 @@ actor TerminalRepositoryService {
         allowRemoteQueries: Bool = true
     ) async throws -> [TerminalCommitEntry] {
         let repositoryRoot = context.repositoryRoot
+        await refreshPreferredBaseBranchIfNeeded(
+            repositoryRoot: repositoryRoot,
+            preferredBaseBranch: preferredBaseBranch
+        )
         let baseBranchName = try await resolveBaseBranchName(
             for: context,
             preferredBaseBranch: preferredBaseBranch,
@@ -1384,6 +1424,10 @@ actor TerminalRepositoryService {
         let isCommitted = file.sectionTitle == "Committed"
 
         if isCommitted {
+            await refreshPreferredBaseBranchIfNeeded(
+                repositoryRoot: repositoryRoot,
+                preferredBaseBranch: preferredBaseBranch
+            )
             let baseBranchName = try await resolveBaseBranchName(
                 for: context,
                 preferredBaseBranch: preferredBaseBranch,

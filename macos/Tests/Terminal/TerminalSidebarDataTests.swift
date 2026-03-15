@@ -270,6 +270,55 @@ struct TerminalSidebarDataTests {
     }
 
     @Test
+    func fetchLocalRepositoryStateRefreshesPreferredBaseBranchBeforeComputingCommitList() async throws {
+        try await withTemporaryDirectory { temporaryRoot in
+            let fixture = try await createStaleBaseBranchFixture(at: temporaryRoot)
+
+            let staleCommitSubjects = try await git(
+                ["log", "--format=%s", "refs/remotes/origin/main..HEAD"],
+                in: fixture.workingRepository.path
+            ).stdout
+                .split(whereSeparator: \.isNewline)
+                .map(String.init)
+            #expect(staleCommitSubjects.count == 4)
+
+            let state = try await fixture.service.fetchLocalRepositoryState(
+                for: fixture.context,
+                preferredBaseBranch: "main"
+            )
+
+            #expect(state.commitEntries.map(\.subject) == [
+                "Add feature follow-up",
+                "Add feature commit",
+            ])
+        }
+    }
+
+    @Test
+    func fetchRepositoryChangesRefreshesPreferredBaseBranchBeforeCommittedDiff() async throws {
+        try await withTemporaryDirectory { temporaryRoot in
+            let fixture = try await createStaleBaseBranchFixture(at: temporaryRoot)
+
+            let stalePaths = try await git(
+                ["diff", "--name-only", "refs/remotes/origin/main", "HEAD"],
+                in: fixture.workingRepository.path
+            ).stdout
+                .split(whereSeparator: \.isNewline)
+                .map(String.init)
+            #expect(stalePaths.contains("base.txt"))
+            #expect(stalePaths.contains("feature.txt"))
+
+            let summary = try await fixture.service.fetchRepositoryChanges(
+                for: fixture.context,
+                preferredBaseBranch: "main",
+                allowRemoteQueries: false
+            )
+
+            #expect(summary.committed.files.map(\.path) == ["feature.txt"])
+        }
+    }
+
+    @Test
     func resolveWatchTargetsIncludesRepositoryAndGitDirectories() async throws {
         try await withTemporaryDirectory { temporaryRoot in
             let repository = temporaryRoot.appendingPathComponent("watch-targets", isDirectory: true)
@@ -288,6 +337,66 @@ struct TerminalSidebarDataTests {
             #expect(targets.watchedPaths.contains(targets.gitDirectory))
         }
     }
+}
+
+private struct StaleBaseBranchFixture {
+    let service: TerminalRepositoryService
+    let context: TerminalRepositoryContext
+    let workingRepository: URL
+}
+
+private func createStaleBaseBranchFixture(at temporaryRoot: URL) async throws -> StaleBaseBranchFixture {
+    let remoteRepository = temporaryRoot.appendingPathComponent("remote.git", isDirectory: true)
+    try await createBareRepository(at: remoteRepository)
+
+    let sourceRepository = temporaryRoot.appendingPathComponent("source", isDirectory: true)
+    try await createRepository(at: sourceRepository)
+    _ = try await git(["remote", "add", "origin", remoteRepository.path], in: sourceRepository.path)
+    _ = try await git(["push", "-u", "origin", "main"], in: sourceRepository.path)
+
+    let workingRepository = temporaryRoot.appendingPathComponent("working", isDirectory: true)
+    _ = try await git(["clone", remoteRepository.path, workingRepository.path])
+    _ = try await git(["config", "user.name", "Ghostty Tests"], in: workingRepository.path)
+    _ = try await git(["config", "user.email", "ghostty-tests@example.com"], in: workingRepository.path)
+
+    let baseFileURL = sourceRepository.appendingPathComponent("base.txt")
+    try "base one\n".write(to: baseFileURL, atomically: true, encoding: .utf8)
+    _ = try await git(["add", "base.txt"], in: sourceRepository.path)
+    _ = try await git(["commit", "-m", "Add base commit"], in: sourceRepository.path)
+    _ = try await git(["push", "origin", "main"], in: sourceRepository.path)
+    try "base one\nbase two\n".write(to: baseFileURL, atomically: true, encoding: .utf8)
+    _ = try await git(["add", "base.txt"], in: sourceRepository.path)
+    _ = try await git(["commit", "-m", "Expand base commit"], in: sourceRepository.path)
+    _ = try await git(["push", "origin", "main"], in: sourceRepository.path)
+
+    let latestMainRef = "refs/heads/pr-base"
+    _ = try await git(
+        ["fetch", "origin", "refs/heads/main:\(latestMainRef)"],
+        in: workingRepository.path
+    )
+    _ = try await git(
+        ["checkout", "-b", "feature/sidebar", latestMainRef],
+        in: workingRepository.path
+    )
+
+    let featureFileURL = workingRepository.appendingPathComponent("feature.txt")
+    try "feature one\n".write(to: featureFileURL, atomically: true, encoding: .utf8)
+    _ = try await git(["add", "feature.txt"], in: workingRepository.path)
+    _ = try await git(["commit", "-m", "Add feature commit"], in: workingRepository.path)
+
+    try "feature one\nfeature two\n".write(to: featureFileURL, atomically: true, encoding: .utf8)
+    _ = try await git(["add", "feature.txt"], in: workingRepository.path)
+    _ = try await git(["commit", "-m", "Add feature follow-up"], in: workingRepository.path)
+
+    let service = TerminalRepositoryService(
+        workspaceRoot: temporaryRoot.appendingPathComponent("workspace", isDirectory: true)
+    )
+    let context = try await service.resolveContext(for: workingRepository.path)
+    return StaleBaseBranchFixture(
+        service: service,
+        context: context,
+        workingRepository: workingRepository
+    )
 }
 
 private func withTemporaryDirectory<T>(
