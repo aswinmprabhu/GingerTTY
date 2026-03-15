@@ -671,6 +671,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     }
 
     private var fileLoadTask: Task<Void, Never>?
+    private var fileSaveTask: Task<Void, Never>?
 
     func openFileViewer(relativePath: String) {
         guard let root = tabState.repositoryRoot else { return }
@@ -678,22 +679,68 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         tabState.openFileViewer(path: relativePath)
 
         fileLoadTask?.cancel()
+        fileSaveTask?.cancel()
         fileLoadTask = Task { [weak self] in
             guard let self else { return }
             let tab = self.tabState
             do {
                 let content = try String(contentsOfFile: fullPath, encoding: .utf8)
                 guard !Task.isCancelled else { return }
-                await MainActor.run { tab.setViewerFileContent(content) }
+                await MainActor.run { tab.setViewerLoadedContent(content) }
             } catch {
                 guard !Task.isCancelled else { return }
-                await MainActor.run { tab.setViewerFileContent("") }
+                await MainActor.run { tab.setViewerFileLoadError(error.localizedDescription) }
             }
         }
     }
 
+    func updateViewerDraftContent(_ content: String) {
+        guard tabState.viewerFileContent != content else { return }
+        tabState.setViewerDraftContent(content)
+    }
+
+    func saveViewerFile(contentOverride: String? = nil) {
+        if let contentOverride {
+            tabState.setViewerDraftContent(contentOverride)
+        }
+
+        guard let root = tabState.repositoryRoot,
+              let relativePath = tabState.viewerFilePath,
+              let content = tabState.viewerFileContent,
+              tabState.canSaveViewerFile else {
+            return
+        }
+
+        let fullPath = (root as NSString).appendingPathComponent(relativePath)
+        tabState.beginViewerSave()
+
+        fileSaveTask?.cancel()
+        fileSaveTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try content.write(toFile: fullPath, atomically: true, encoding: .utf8)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self.tabState.completeViewerSave(with: content)
+                    self.refreshLocalRepository()
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self.tabState.setViewerSaveError(error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    func revertViewerFile() {
+        guard tabState.canRevertViewerFile else { return }
+        tabState.revertViewerDraftToSaved()
+    }
+
     func closeFileViewer() {
         fileLoadTask?.cancel()
+        fileSaveTask?.cancel()
         tabState.closeFileViewer()
     }
 

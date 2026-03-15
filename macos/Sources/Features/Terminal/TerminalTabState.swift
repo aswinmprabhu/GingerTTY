@@ -105,10 +105,34 @@ final class TerminalTabState: ObservableObject, Identifiable {
     // MARK: File viewer state
 
     @Published var viewerFilePath: String?
+    @Published var viewerOriginalContent: String?
     @Published var viewerFileContent: String?
     @Published var isViewerLoading: Bool = false
+    @Published private(set) var isViewerSaving: Bool = false
+    @Published private(set) var viewerLoadError: String?
+    @Published private(set) var viewerSaveError: String?
 
     @Published var highlightedFilePath: String?
+
+    var isViewerDirty: Bool {
+        viewerFilePath != nil && viewerFileContent != viewerOriginalContent
+    }
+
+    var canSaveViewerFile: Bool {
+        viewerFilePath != nil &&
+            viewerFileContent != nil &&
+            isViewerDirty &&
+            !isViewerLoading &&
+            !isViewerSaving
+    }
+
+    var canRevertViewerFile: Bool {
+        viewerFilePath != nil &&
+            viewerOriginalContent != nil &&
+            isViewerDirty &&
+            !isViewerLoading &&
+            !isViewerSaving
+    }
 
     // MARK: Init
 
@@ -278,8 +302,12 @@ final class TerminalTabState: ObservableObject, Identifiable {
         combinedDiffRawText = nil
         isCombinedDiffLoading = false
         viewerFilePath = nil
+        viewerOriginalContent = nil
         viewerFileContent = nil
         isViewerLoading = false
+        isViewerSaving = false
+        viewerLoadError = nil
+        viewerSaveError = nil
     }
 
     func setDiffRows(_ rows: [SplitDiffRow]) {
@@ -311,8 +339,12 @@ final class TerminalTabState: ObservableObject, Identifiable {
 
     func openFileViewer(path: String) {
         viewerFilePath = path
+        viewerOriginalContent = nil
         viewerFileContent = nil
         isViewerLoading = true
+        isViewerSaving = false
+        viewerLoadError = nil
+        viewerSaveError = nil
         highlightedFilePath = path
         rightSidebarSelection = .files
         if isRightSidebarCollapsed {
@@ -327,15 +359,59 @@ final class TerminalTabState: ObservableObject, Identifiable {
         isCombinedDiffLoading = false
     }
 
-    func setViewerFileContent(_ content: String) {
+    func setViewerLoadedContent(_ content: String) {
+        viewerOriginalContent = content
         viewerFileContent = content
         isViewerLoading = false
+        isViewerSaving = false
+        viewerLoadError = nil
+        viewerSaveError = nil
+    }
+
+    func setViewerFileLoadError(_ message: String) {
+        viewerOriginalContent = nil
+        viewerFileContent = nil
+        isViewerLoading = false
+        isViewerSaving = false
+        viewerLoadError = message
+    }
+
+    func setViewerDraftContent(_ content: String) {
+        viewerFileContent = content
+        viewerSaveError = nil
+    }
+
+    func beginViewerSave() {
+        isViewerSaving = true
+        viewerSaveError = nil
+    }
+
+    func completeViewerSave(with content: String) {
+        viewerOriginalContent = content
+        viewerFileContent = content
+        isViewerSaving = false
+        viewerSaveError = nil
+        viewerLoadError = nil
+    }
+
+    func setViewerSaveError(_ message: String) {
+        isViewerSaving = false
+        viewerSaveError = message
+    }
+
+    func revertViewerDraftToSaved() {
+        viewerFileContent = viewerOriginalContent
+        viewerSaveError = nil
     }
 
     func closeFileViewer() {
         viewerFilePath = nil
+        viewerOriginalContent = nil
         viewerFileContent = nil
         isViewerLoading = false
+        isViewerSaving = false
+        viewerLoadError = nil
+        viewerSaveError = nil
     }
 
     // MARK: Combined diff
@@ -349,8 +425,12 @@ final class TerminalTabState: ObservableObject, Identifiable {
         diffFileContent = nil
         isDiffLoading = false
         viewerFilePath = nil
+        viewerOriginalContent = nil
         viewerFileContent = nil
         isViewerLoading = false
+        isViewerSaving = false
+        viewerLoadError = nil
+        viewerSaveError = nil
     }
 
     func setCombinedDiffText(_ text: String) {

@@ -300,12 +300,72 @@ private class FindBarNSTextField: NSTextField {
     }
 }
 
+private enum PierreLocalResources {
+    static let directoryName = "PierreDiffs"
+    static let bundleFileName = "pierre-diffs.bundle.mjs"
+    static let moduleImportPath = "./\(bundleFileName)"
+    static let missingMessage = """
+    Pierre diff assets are missing from the app bundle.
+
+    Rebuild and reinstall GingerTTY so the bundled Pierre resources are copied into the app.
+    """
+
+    static var baseURL: URL? {
+        guard let baseURL = Bundle.main.resourceURL?.appendingPathComponent(directoryName, isDirectory: true) else {
+            return nil
+        }
+
+        let bundleURL = baseURL.appendingPathComponent(bundleFileName)
+        guard FileManager.default.fileExists(atPath: bundleURL.path) else {
+            return nil
+        }
+
+        return baseURL
+    }
+
+    static func errorHTML(message: String, theme: TerminalCodeTheme) -> String {
+        """
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <meta charset="utf-8">
+        <style>
+            html, body {
+                margin: 0;
+                width: 100%;
+                height: 100%;
+                background: \(theme.shellBackgroundHex);
+                color: \(theme.errorHex);
+                font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            }
+            body {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 24px;
+                text-align: center;
+                white-space: pre-wrap;
+                line-height: 1.5;
+            }
+        </style>
+        </head>
+        <body>\(message)</body>
+        </html>
+        """
+    }
+}
+
 // MARK: - Main Diff View
 
 struct TerminalDiffView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var controller: TerminalController
     @ObservedObject var tab: TerminalTabState
     @StateObject private var findModel = WebViewFindModel()
+
+    private var codeTheme: TerminalCodeTheme {
+        .forColorScheme(colorScheme)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -378,6 +438,7 @@ struct TerminalDiffView: View {
                     diffText: diffText,
                     fileName: tab.selectedDiffFile?.path ?? "",
                     fileContent: tab.diffFileContent,
+                    theme: codeTheme,
                     reviewThread: tab.activeReviewThread,
                     isReviewMode: tab.isReviewMode,
                     draftComments: tab.localReviewComments.filter { $0.filePath == tab.selectedDiffFile?.path },
@@ -499,6 +560,7 @@ struct PierreDiffWebView: NSViewRepresentable {
     let diffText: String
     let fileName: String
     let fileContent: String?
+    let theme: TerminalCodeTheme
     let reviewThread: TerminalPullRequestReviewThread?
     let isReviewMode: Bool
     let draftComments: [TerminalLocalReviewComment]
@@ -540,15 +602,25 @@ struct PierreDiffWebView: NSViewRepresentable {
         context.coordinator.lastReviewThreadSignature = Self.reviewThreadSignature(for: reviewThread)
         context.coordinator.lastFileName = fileName
         context.coordinator.lastIsReviewMode = isReviewMode
+        context.coordinator.lastThemeType = theme.pierreThemeType
         findModel?.webView = webView
+
+        guard let baseURL = PierreLocalResources.baseURL else {
+            webView.loadHTMLString(
+                PierreLocalResources.errorHTML(message: PierreLocalResources.missingMessage, theme: theme),
+                baseURL: nil
+            )
+            return webView
+        }
 
         let html = Self.buildHTML(
             diffText: diffText, fileName: fileName,
             fileContent: fileContent,
+            theme: theme,
             reviewThread: reviewThread, isReviewMode: isReviewMode,
             draftComments: draftComments
         )
-        webView.loadHTMLString(html, baseURL: URL(string: "https://esm.sh/"))
+        webView.loadHTMLString(html, baseURL: baseURL)
 
         return webView
     }
@@ -560,19 +632,29 @@ struct PierreDiffWebView: NSViewRepresentable {
             || context.coordinator.lastDraftSignature != draftSignature
             || context.coordinator.lastReviewThreadSignature != reviewThreadSignature
             || context.coordinator.lastFileName != fileName
-            || context.coordinator.lastIsReviewMode != isReviewMode {
+            || context.coordinator.lastIsReviewMode != isReviewMode
+            || context.coordinator.lastThemeType != theme.pierreThemeType {
             context.coordinator.lastDiffText = diffText
             context.coordinator.lastDraftSignature = draftSignature
             context.coordinator.lastReviewThreadSignature = reviewThreadSignature
             context.coordinator.lastFileName = fileName
             context.coordinator.lastIsReviewMode = isReviewMode
+            context.coordinator.lastThemeType = theme.pierreThemeType
+            guard let baseURL = PierreLocalResources.baseURL else {
+                webView.loadHTMLString(
+                    PierreLocalResources.errorHTML(message: PierreLocalResources.missingMessage, theme: theme),
+                    baseURL: nil
+                )
+                return
+            }
             let html = Self.buildHTML(
                 diffText: diffText, fileName: fileName,
                 fileContent: fileContent,
+                theme: theme,
                 reviewThread: reviewThread, isReviewMode: isReviewMode,
                 draftComments: draftComments
             )
-            webView.loadHTMLString(html, baseURL: URL(string: "https://esm.sh/"))
+            webView.loadHTMLString(html, baseURL: baseURL)
         }
     }
 
@@ -618,6 +700,7 @@ struct PierreDiffWebView: NSViewRepresentable {
         var lastReviewThreadSignature: String = "nil"
         var lastFileName: String = ""
         var lastIsReviewMode = false
+        var lastThemeType = "dark"
 
         init(
             onLinesSelected: @escaping (_ startLine: Int, _ endLine: Int, _ side: String) -> Void,
@@ -704,6 +787,7 @@ struct PierreDiffWebView: NSViewRepresentable {
         diffText: String,
         fileName: String,
         fileContent: String?,
+        theme: TerminalCodeTheme,
         reviewThread: TerminalPullRequestReviewThread?,
         isReviewMode: Bool,
         draftComments: [TerminalLocalReviewComment]
@@ -772,6 +856,12 @@ struct PierreDiffWebView: NSViewRepresentable {
 
         let annotationsJS = "const annotations = [\(annotationItems.joined(separator: ",\n"))];";
         let isReviewModeJS = isReviewMode ? "true" : "false"
+        let themeType = theme.pierreThemeType
+        let backgroundHex = theme.shellBackgroundHex
+        let foregroundHex = theme.shellForegroundHex
+        let mutedHex = theme.mutedHex
+        let errorHex = theme.errorHex
+        let moduleImportPath = PierreLocalResources.moduleImportPath
 
         return """
         <!DOCTYPE html>
@@ -782,7 +872,7 @@ struct PierreDiffWebView: NSViewRepresentable {
             * { margin: 0; padding: 0; box-sizing: border-box; }
             html, body {
                 background: transparent;
-                color: #e0e0e0;
+                color: \(foregroundHex);
                 font-family: -apple-system, BlinkMacSystemFont, sans-serif;
                 height: 100%;
                 overflow: hidden;
@@ -791,22 +881,25 @@ struct PierreDiffWebView: NSViewRepresentable {
                 width: 100%;
                 height: 100%;
                 overflow: auto;
+                background: \(backgroundHex);
             }
             #loading {
                 display: flex;
                 align-items: center;
                 justify-content: center;
                 height: 100%;
-                color: #888;
+                color: \(mutedHex);
                 font-size: 13px;
+                background: \(backgroundHex);
             }
             #loading.hidden { display: none; }
             #error {
                 display: none;
                 padding: 20px;
-                color: #ff6b6b;
+                color: \(errorHex);
                 font-size: 13px;
                 white-space: pre-wrap;
+                background: \(backgroundHex);
             }
         </style>
         </head>
@@ -816,7 +909,7 @@ struct PierreDiffWebView: NSViewRepresentable {
         <div id="container"></div>
         <script type="module">
         try {
-            const { FileDiff, parsePatchFiles, DIFFS_TAG_NAME } = await import('https://esm.sh/@pierre/diffs@1.0.11');
+            const { FileDiff, parsePatchFiles, DIFFS_TAG_NAME } = await import('\(moduleImportPath)');
 
             const patchText = `\(escapedDiff)`;
             const parsedPatches = parsePatchFiles(patchText, '\(lang)');
@@ -1107,7 +1200,7 @@ struct PierreDiffWebView: NSViewRepresentable {
 
                     const instance = new FileDiff({
                         theme: { dark: 'pierre-dark', light: 'pierre-light' },
-                        themeType: 'dark',
+                        themeType: '\(themeType)',
                         diffStyle: 'split',
                         overflow: 'scroll',
                         enableLineSelection: true,
@@ -1522,9 +1615,14 @@ struct PRThreadCommentsUberBox: View {
 // MARK: - File Viewer View (full file, not diff)
 
 struct TerminalFileViewerView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var controller: TerminalController
     @ObservedObject var tab: TerminalTabState
-    @StateObject private var findModel = WebViewFindModel()
+    @StateObject private var editorModel = MonacoEditorModel()
+
+    private var codeTheme: TerminalCodeTheme {
+        .forColorScheme(colorScheme)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1532,12 +1630,12 @@ struct TerminalFileViewerView: View {
             Divider()
             fileViewerContent
         }
-        .overlay(alignment: .topTrailing) {
-            WebViewFindBar(model: findModel)
-        }
         .background {
-            Button("") { findModel.show() }
+            Button("") { editorModel.showFind() }
                 .keyboardShortcut("f", modifiers: .command)
+                .hidden()
+            Button("") { controller.saveViewerFile() }
+                .keyboardShortcut("s", modifiers: .command)
                 .hidden()
         }
     }
@@ -1565,6 +1663,31 @@ struct TerminalFileViewerView: View {
             }
 
             Spacer()
+
+            if tab.isViewerDirty {
+                Text("Unsaved")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+            }
+
+            if let error = tab.viewerSaveError ?? tab.viewerLoadError,
+               !error.isEmpty {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(1)
+                    .frame(maxWidth: 320, alignment: .trailing)
+            }
+
+            Button("Revert") {
+                controller.revertViewerFile()
+            }
+            .disabled(!tab.canRevertViewerFile)
+
+            Button(tab.isViewerSaving ? "Saving…" : "Save") {
+                controller.saveViewerFile()
+            }
+            .disabled(!tab.canSaveViewerFile)
         }
         .padding(14)
         .background(Color(nsColor: .windowBackgroundColor))
@@ -1581,15 +1704,34 @@ struct TerminalFileViewerView: View {
                         .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let content = tab.viewerFileContent, !content.isEmpty {
-                PierreFileWebView(
-                    fileContent: content,
-                    fileName: tab.viewerFilePath ?? "",
-                    findModel: findModel
+            } else if let content = tab.viewerFileContent,
+                      let path = tab.viewerFilePath {
+                MonacoEditorWebView(
+                    filePath: path,
+                    content: content,
+                    theme: codeTheme,
+                    editorModel: editorModel,
+                    onContentChanged: { content in
+                        controller.updateViewerDraftContent(content)
+                    },
+                    onSaveRequested: { content in
+                        controller.saveViewerFile(contentOverride: content)
+                    }
                 )
+            } else if let error = tab.viewerLoadError, !error.isEmpty {
+                VStack(spacing: 8) {
+                    Text("File could not be read.")
+                        .foregroundStyle(.secondary)
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(14)
             } else {
                 VStack {
-                    Text("File is empty or could not be read.")
+                    Text("File content unavailable.")
                         .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1604,9 +1746,14 @@ struct TerminalFileViewerView: View {
 // MARK: - Combined (multi-file) Diff View
 
 struct TerminalCombinedDiffView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var controller: TerminalController
     @ObservedObject var tab: TerminalTabState
     @StateObject private var findModel = WebViewFindModel()
+
+    private var codeTheme: TerminalCodeTheme {
+        .forColorScheme(colorScheme)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1658,6 +1805,7 @@ struct TerminalCombinedDiffView: View {
             } else if let diffText = tab.combinedDiffRawText, !diffText.isEmpty {
                 PierreCombinedDiffWebView(
                     diffText: diffText,
+                    theme: codeTheme,
                     findModel: findModel
                 )
             } else {
@@ -1676,6 +1824,7 @@ struct TerminalCombinedDiffView: View {
 
 struct PierreCombinedDiffWebView: NSViewRepresentable {
     let diffText: String
+    let theme: TerminalCodeTheme
     var findModel: WebViewFindModel? = nil
 
     func makeCoordinator() -> Coordinator {
@@ -1689,30 +1838,55 @@ struct PierreCombinedDiffWebView: NSViewRepresentable {
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.setValue(false, forKey: "drawsBackground")
         context.coordinator.lastDiffText = diffText
+        context.coordinator.lastThemeType = theme.pierreThemeType
         findModel?.webView = webView
 
-        let html = Self.buildCombinedHTML(diffText: diffText)
-        webView.loadHTMLString(html, baseURL: URL(string: "https://esm.sh/"))
+        guard let baseURL = PierreLocalResources.baseURL else {
+            webView.loadHTMLString(
+                PierreLocalResources.errorHTML(message: PierreLocalResources.missingMessage, theme: theme),
+                baseURL: nil
+            )
+            return webView
+        }
+
+        let html = Self.buildCombinedHTML(diffText: diffText, theme: theme)
+        webView.loadHTMLString(html, baseURL: baseURL)
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
-        if context.coordinator.lastDiffText != diffText {
+        if context.coordinator.lastDiffText != diffText
+            || context.coordinator.lastThemeType != theme.pierreThemeType {
             context.coordinator.lastDiffText = diffText
-            let html = Self.buildCombinedHTML(diffText: diffText)
-            webView.loadHTMLString(html, baseURL: URL(string: "https://esm.sh/"))
+            context.coordinator.lastThemeType = theme.pierreThemeType
+            guard let baseURL = PierreLocalResources.baseURL else {
+                webView.loadHTMLString(
+                    PierreLocalResources.errorHTML(message: PierreLocalResources.missingMessage, theme: theme),
+                    baseURL: nil
+                )
+                return
+            }
+            let html = Self.buildCombinedHTML(diffText: diffText, theme: theme)
+            webView.loadHTMLString(html, baseURL: baseURL)
         }
     }
 
     class Coordinator: NSObject {
         var lastDiffText: String?
+        var lastThemeType = "dark"
     }
 
-    private static func buildCombinedHTML(diffText: String) -> String {
+    private static func buildCombinedHTML(diffText: String, theme: TerminalCodeTheme) -> String {
         let escapedDiff = diffText
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "`", with: "\\`")
             .replacingOccurrences(of: "$", with: "\\$")
+        let themeType = theme.pierreThemeType
+        let backgroundHex = theme.shellBackgroundHex
+        let foregroundHex = theme.shellForegroundHex
+        let mutedHex = theme.mutedHex
+        let errorHex = theme.errorHex
+        let moduleImportPath = PierreLocalResources.moduleImportPath
 
         return """
         <!DOCTYPE html>
@@ -1723,7 +1897,7 @@ struct PierreCombinedDiffWebView: NSViewRepresentable {
             * { margin: 0; padding: 0; box-sizing: border-box; }
             html, body {
                 background: transparent;
-                color: #e0e0e0;
+                color: \(foregroundHex);
                 font-family: -apple-system, BlinkMacSystemFont, sans-serif;
                 height: 100%;
                 overflow: hidden;
@@ -1732,22 +1906,25 @@ struct PierreCombinedDiffWebView: NSViewRepresentable {
                 width: 100%;
                 height: 100%;
                 overflow: auto;
+                background: \(backgroundHex);
             }
             #loading {
                 display: flex;
                 align-items: center;
                 justify-content: center;
                 height: 100%;
-                color: #888;
+                color: \(mutedHex);
                 font-size: 13px;
+                background: \(backgroundHex);
             }
             #loading.hidden { display: none; }
             #error {
                 display: none;
                 padding: 20px;
-                color: #ff6b6b;
+                color: \(errorHex);
                 font-size: 13px;
                 white-space: pre-wrap;
+                background: \(backgroundHex);
             }
         </style>
         </head>
@@ -1757,7 +1934,7 @@ struct PierreCombinedDiffWebView: NSViewRepresentable {
         <div id="container"></div>
         <script type="module">
         try {
-            const { FileDiff, parsePatchFiles, DIFFS_TAG_NAME } = await import('https://esm.sh/@pierre/diffs@1.0.11');
+            const { FileDiff, parsePatchFiles, DIFFS_TAG_NAME } = await import('\(moduleImportPath)');
 
             const patchText = `\(escapedDiff)`;
             const parsedPatches = parsePatchFiles(patchText);
@@ -1769,7 +1946,7 @@ struct PierreCombinedDiffWebView: NSViewRepresentable {
                 for (const fileDiff of patch.files) {
                     const instance = new FileDiff({
                         theme: { dark: 'pierre-dark', light: 'pierre-light' },
-                        themeType: 'dark',
+                        themeType: '\(themeType)',
                         diffStyle: 'split',
                         overflow: 'scroll',
                         lineHoverHighlight: 'both',
@@ -1801,6 +1978,7 @@ struct PierreCombinedDiffWebView: NSViewRepresentable {
 struct PierreFileWebView: NSViewRepresentable {
     let fileContent: String
     let fileName: String
+    let theme: TerminalCodeTheme = .forColorScheme(.dark)
     var findModel: WebViewFindModel? = nil
 
     func makeCoordinator() -> Coordinator {
@@ -1816,16 +1994,31 @@ struct PierreFileWebView: NSViewRepresentable {
         context.coordinator.lastContent = fileContent
         findModel?.webView = webView
 
-        let html = Self.buildFileHTML(content: fileContent, fileName: fileName)
-        webView.loadHTMLString(html, baseURL: URL(string: "https://esm.sh/"))
+        guard let baseURL = PierreLocalResources.baseURL else {
+            webView.loadHTMLString(
+                PierreLocalResources.errorHTML(message: PierreLocalResources.missingMessage, theme: theme),
+                baseURL: nil
+            )
+            return webView
+        }
+
+        let html = Self.buildFileHTML(content: fileContent, fileName: fileName, theme: theme)
+        webView.loadHTMLString(html, baseURL: baseURL)
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         if context.coordinator.lastContent != fileContent {
             context.coordinator.lastContent = fileContent
-            let html = Self.buildFileHTML(content: fileContent, fileName: fileName)
-            webView.loadHTMLString(html, baseURL: URL(string: "https://esm.sh/"))
+            guard let baseURL = PierreLocalResources.baseURL else {
+                webView.loadHTMLString(
+                    PierreLocalResources.errorHTML(message: PierreLocalResources.missingMessage, theme: theme),
+                    baseURL: nil
+                )
+                return
+            }
+            let html = Self.buildFileHTML(content: fileContent, fileName: fileName, theme: theme)
+            webView.loadHTMLString(html, baseURL: baseURL)
         }
     }
 
@@ -1833,7 +2026,7 @@ struct PierreFileWebView: NSViewRepresentable {
         var lastContent: String?
     }
 
-    private static func buildFileHTML(content: String, fileName: String) -> String {
+    private static func buildFileHTML(content: String, fileName: String, theme: TerminalCodeTheme) -> String {
         let lang = PierreDiffWebView.detectLanguage(from: fileName)
 
         let escapedContent = content
@@ -1842,6 +2035,12 @@ struct PierreFileWebView: NSViewRepresentable {
             .replacingOccurrences(of: "$", with: "\\$")
 
         let escapedName = PierreDiffWebView.escapeJS(fileName)
+        let backgroundHex = theme.shellBackgroundHex
+        let foregroundHex = theme.shellForegroundHex
+        let mutedHex = theme.mutedHex
+        let errorHex = theme.errorHex
+        let themeType = theme.pierreThemeType
+        let moduleImportPath = PierreLocalResources.moduleImportPath
 
         return """
         <!DOCTYPE html>
@@ -1852,7 +2051,7 @@ struct PierreFileWebView: NSViewRepresentable {
             * { margin: 0; padding: 0; box-sizing: border-box; }
             html, body {
                 background: transparent;
-                color: #e0e0e0;
+                color: \(foregroundHex);
                 font-family: -apple-system, BlinkMacSystemFont, sans-serif;
                 height: 100%;
                 overflow: hidden;
@@ -1861,22 +2060,25 @@ struct PierreFileWebView: NSViewRepresentable {
                 width: 100%;
                 height: 100%;
                 overflow: auto;
+                background: \(backgroundHex);
             }
             #loading {
                 display: flex;
                 align-items: center;
                 justify-content: center;
                 height: 100%;
-                color: #888;
+                color: \(mutedHex);
                 font-size: 13px;
+                background: \(backgroundHex);
             }
             #loading.hidden { display: none; }
             #error {
                 display: none;
                 padding: 20px;
-                color: #ff6b6b;
+                color: \(errorHex);
                 font-size: 13px;
                 white-space: pre-wrap;
+                background: \(backgroundHex);
             }
         </style>
         </head>
@@ -1886,7 +2088,7 @@ struct PierreFileWebView: NSViewRepresentable {
         <div id="container"></div>
         <script type="module">
         try {
-            const { File, DIFFS_TAG_NAME } = await import('https://esm.sh/@pierre/diffs@1.0.11');
+            const { File, DIFFS_TAG_NAME } = await import('\(moduleImportPath)');
 
             const fileContent = `\(escapedContent)`;
 
@@ -1896,7 +2098,7 @@ struct PierreFileWebView: NSViewRepresentable {
 
             const instance = new File({
                 theme: { dark: 'pierre-dark', light: 'pierre-light' },
-                themeType: 'dark',
+                themeType: '\(themeType)',
                 overflow: 'scroll',
                 disableFileHeader: true,
                 lineHoverHighlight: 'both',
