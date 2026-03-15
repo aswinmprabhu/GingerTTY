@@ -2107,7 +2107,9 @@ extension Ghostty {
                 // this but since we async send the config out below we have to own the lifetime.
                 // A future improvement might be to add reference counting to config or
                 // something so apprt's do not have to do this.
-                let config = Config(clone: v.config)
+                guard let app_ud = ghostty_app_userdata(app) else { return }
+                let ghostty = Unmanaged<App>.fromOpaque(app_ud).takeUnretainedValue()
+                let config = Config(clone: v.config, preferredPath: ghostty.configPath)
 
                 switch target.tag {
                 case GHOSTTY_TARGET_APP:
@@ -2123,8 +2125,6 @@ extension Ghostty {
                     // We also REPLACE our app-level config when this happens. This lets
                     // all the various things that depend on this but are still theme specific
                     // such as split border color work.
-                    guard let app_ud = ghostty_app_userdata(app) else { return }
-                    let ghostty = Unmanaged<App>.fromOpaque(app_ud).takeUnretainedValue()
                     ghostty.config = config
 
                     return

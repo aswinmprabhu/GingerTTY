@@ -37,6 +37,9 @@ class TerminalWindow: NSWindow {
     /// Sets up our tab context menu
     private var tabMenuObserver: NSObjectProtocol?
 
+    /// Re-hides the native tab bar whenever AppKit makes it visible again.
+    private var nativeTabBarVisibilityObservation: NSKeyValueObservation?
+
     /// Handles inline tab title editing for this host window.
     private(set) lazy var tabTitleEditor = TabTitleEditor(
         hostWindow: self,
@@ -65,6 +68,7 @@ class TerminalWindow: NSWindow {
             guard tabColor != oldValue else { return }
             tabColorIndicator.rootView = TabColorIndicatorView(tabColor: tabColor)
             invalidateRestorableState()
+            notifyGingerTTYTabGroupDidChange()
         }
     }
 
@@ -100,6 +104,8 @@ class TerminalWindow: NSWindow {
         tabbingMode = .preferred
         DispatchQueue.main.async {
             self.tabbingMode = .automatic
+            self.setupNativeTabBarVisibilityObservation()
+            self.updateNativeTabBarVisibility()
         }
 
         // All new windows are based on the app config at the time of creation.
@@ -210,11 +216,8 @@ class TerminalWindow: NSWindow {
 
         // Its possible we miss the accessory titlebar call so we check again
         // whenever the window becomes main. Both of these are idempotent.
-        if tabBarView != nil {
-            tabBarDidAppear()
-        } else {
-            tabBarDidDisappear()
-        }
+        setupNativeTabBarVisibilityObservation()
+        updateNativeTabBarVisibility()
         viewModel.isMainWindow = true
     }
 
@@ -256,7 +259,7 @@ class TerminalWindow: NSWindow {
         // it. This has been verified to work on macOS 12 to 26
         if isTabBar(childViewController) {
             childViewController.identifier = Self.tabBarIdentifier
-            tabBarDidAppear()
+            updateNativeTabBarVisibility()
         }
     }
 
@@ -278,6 +281,15 @@ class TerminalWindow: NSWindow {
         /// accessing ``tabGroup?.windows`` here
         /// will cause other edge cases, be careful
         (tabbedWindows?.count ?? 0) > 1
+    }
+
+    private var shouldHideNativeTabBar: Bool {
+        guard let appDelegate = NSApp.delegate as? AppDelegate else { return false }
+        return appDelegate.ghostty.config.usesCustomMacOSTabBar
+    }
+
+    private var nativeTabBarAccessoryViewController: NSTitlebarAccessoryViewController? {
+        titlebarAccessoryViewControllers.first(where: isTabBar)
     }
 
     func isTabBar(_ childViewController: NSTitlebarAccessoryViewController) -> Bool {
@@ -322,6 +334,43 @@ class TerminalWindow: NSWindow {
                 addTitlebarAccessoryViewController(resetZoomAccessory)
             }
         }
+    }
+
+    private func setupNativeTabBarVisibilityObservation() {
+        nativeTabBarVisibilityObservation?.invalidate()
+        nativeTabBarVisibilityObservation = nil
+
+        nativeTabBarVisibilityObservation = tabGroup?.observe(
+            \.isTabBarVisible,
+            options: [.initial, .new]
+        ) { [weak self] _, _ in
+            DispatchQueue.main.async {
+                self?.updateNativeTabBarVisibility()
+            }
+        }
+    }
+
+    /// Custom tab bars still use native tab groups; we only suppress the stock strip.
+    private func updateNativeTabBarVisibility() {
+        guard let tabBarController = nativeTabBarAccessoryViewController else {
+            tabBarDidDisappear()
+            return
+        }
+
+        let shouldHide = shouldHideNativeTabBar
+        tabBarController.view.isHidden = shouldHide
+        tabBarController.isHidden = shouldHide
+        tabBarView?.isHidden = shouldHide
+
+        if shouldHide {
+            tabBarDidDisappear()
+        } else {
+            tabBarDidAppear()
+        }
+    }
+
+    private func notifyGingerTTYTabGroupDidChange() {
+        NotificationCenter.default.post(name: .gingerTTYTabGroupDidChange, object: self)
     }
 
     // MARK: Tab Key Equivalents
@@ -399,6 +448,7 @@ class TerminalWindow: NSWindow {
             /// Check ``titlebarFont`` down below
             /// to see why we need to check `hasMoreThanOneTabs` here
             titlebarTextField?.usesSingleLineMode = !hasMoreThanOneTabs
+            notifyGingerTTYTabGroupDidChange()
         }
     }
 
@@ -578,6 +628,7 @@ class TerminalWindow: NSWindow {
         if let observer = tabMenuObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+        nativeTabBarVisibilityObservation?.invalidate()
     }
 
     // MARK: Config
@@ -607,12 +658,13 @@ class TerminalWindow: NSWindow {
             self.backgroundOpacity = config.backgroundOpacity
             self.macosWindowButtons = config.macosWindowButtons
             self.backgroundBlur = config.backgroundBlur
-            self.macosTitlebarStyle = config.macosTitlebarStyle
+            let titlebarStyle = config.macosTitlebarStyleRaw
+            self.macosTitlebarStyle = titlebarStyle
 
             // Set corner radius based on macos-titlebar-style
             // Native, transparent, and hidden styles use 16pt radius
             // Tabs style uses 20pt radius
-            switch config.macosTitlebarStyle {
+            switch titlebarStyle {
             case "tabs":
                 self.windowCornerRadius = 20
             default:

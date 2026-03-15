@@ -5,7 +5,10 @@ struct TerminalWindowView: View {
     @ObservedObject var controller: TerminalController
     @ObservedObject private var tab: TerminalTabState
 
+    @State private var leftTabBarWidth: CGFloat = 200
     @State private var rightSidebarWidth: CGFloat = 300
+    private let leftTabBarMinWidth: CGFloat = 200
+    private let leftTabBarMaxWidth: CGFloat = 360
     private let sidebarMinWidth: CGFloat = 200
     private let sidebarMaxWidth: CGFloat = 500
     private let rightSidebarRailWidth: CGFloat = 32
@@ -16,6 +19,42 @@ struct TerminalWindowView: View {
     }
 
     var body: some View {
+        Group {
+            if controller.ghostty.config.usesCustomMacOSTabBar {
+                HStack(spacing: 0) {
+                    VerticalTabBar(controller: controller)
+                        .frame(width: leftTabBarWidth)
+                    ResizableDivider(
+                        dimension: $leftTabBarWidth,
+                        minValue: leftTabBarMinWidth,
+                        maxValue: leftTabBarMaxWidth
+                    )
+                    terminalAndSidebarContent
+                }
+            } else {
+                terminalAndSidebarContent
+            }
+        }
+        .sheet(item: $controller.worktreeSheetModel) { model in
+            TerminalWorktreeSheet(model: model)
+        }
+        .sheet(item: $controller.prReviewSheetModel) { model in
+            TerminalPRReviewSheet(model: model)
+        }
+        .sheet(item: $controller.fileCommandPaletteModel) { model in
+            TerminalFileCommandPalette(model: model)
+        }
+        .background {
+            Button("") {
+                controller.presentFileCommandPalette()
+            }
+            .keyboardShortcut("p", modifiers: .command)
+            .hidden()
+        }
+        .accessibilityIdentifier("terminal-window-view")
+    }
+
+    private var terminalAndSidebarContent: some View {
         HStack(spacing: 0) {
             if controller.isSelectedRightSidebarCollapsed {
                 terminalContent
@@ -38,23 +77,6 @@ struct TerminalWindowView: View {
                     .frame(width: rightSidebarWidth)
             }
         }
-        .sheet(item: $controller.worktreeSheetModel) { model in
-            TerminalWorktreeSheet(model: model)
-        }
-        .sheet(item: $controller.prReviewSheetModel) { model in
-            TerminalPRReviewSheet(model: model)
-        }
-        .sheet(item: $controller.fileCommandPaletteModel) { model in
-            TerminalFileCommandPalette(model: model)
-        }
-        .background {
-            Button("") {
-                controller.presentFileCommandPalette()
-            }
-            .keyboardShortcut("p", modifiers: .command)
-            .hidden()
-        }
-        .accessibilityIdentifier("terminal-window-view")
     }
 
     private var terminalContent: some View {
@@ -100,6 +122,28 @@ private struct RightSidebarRail: View {
             .accessibilityIdentifier("sidebar-right-toggle")
 
             Spacer()
+
+            Button {
+                _ = controller.presentPRReviewSheet()
+            } label: {
+                Image(systemName: "text.bubble")
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+            }
+            .buttonStyle(.plain)
+            .help("PR Reviews")
+            .accessibilityIdentifier("sidebar-right-pr-reviews-rail")
+
+            Button {
+                _ = controller.presentWorktreeSheet()
+            } label: {
+                Image(systemName: "tree.fill")
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+            }
+            .buttonStyle(.plain)
+            .help("New Worktree")
+            .accessibilityIdentifier("sidebar-right-worktree-rail")
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .accessibilityIdentifier("terminal-right-sidebar-rail")
@@ -154,6 +198,29 @@ private struct RightSidebarInspector: View {
                 .padding(14)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+
+            Divider()
+
+            VStack(spacing: 10) {
+                Button {
+                    _ = controller.presentPRReviewSheet()
+                } label: {
+                    Label("PR Reviews", systemImage: "text.bubble")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("sidebar-right-pr-reviews-inspector")
+
+                Button {
+                    _ = controller.presentWorktreeSheet()
+                } label: {
+                    Label("New Worktree", systemImage: "tree.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("sidebar-right-worktree-inspector")
+            }
+            .padding(14)
         }
     }
 }
