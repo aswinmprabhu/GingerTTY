@@ -535,6 +535,11 @@ struct PierreDiffWebView: NSViewRepresentable {
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.setValue(false, forKey: "drawsBackground")
         context.coordinator.webView = webView
+        context.coordinator.lastDiffText = diffText
+        context.coordinator.lastDraftSignature = Self.draftSignature(for: draftComments)
+        context.coordinator.lastReviewThreadSignature = Self.reviewThreadSignature(for: reviewThread)
+        context.coordinator.lastFileName = fileName
+        context.coordinator.lastIsReviewMode = isReviewMode
         findModel?.webView = webView
 
         let html = Self.buildHTML(
@@ -549,11 +554,18 @@ struct PierreDiffWebView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
-        let draftCount = draftComments.count
+        let draftSignature = Self.draftSignature(for: draftComments)
+        let reviewThreadSignature = Self.reviewThreadSignature(for: reviewThread)
         if context.coordinator.lastDiffText != diffText
-            || context.coordinator.lastDraftCount != draftCount {
+            || context.coordinator.lastDraftSignature != draftSignature
+            || context.coordinator.lastReviewThreadSignature != reviewThreadSignature
+            || context.coordinator.lastFileName != fileName
+            || context.coordinator.lastIsReviewMode != isReviewMode {
             context.coordinator.lastDiffText = diffText
-            context.coordinator.lastDraftCount = draftCount
+            context.coordinator.lastDraftSignature = draftSignature
+            context.coordinator.lastReviewThreadSignature = reviewThreadSignature
+            context.coordinator.lastFileName = fileName
+            context.coordinator.lastIsReviewMode = isReviewMode
             let html = Self.buildHTML(
                 diffText: diffText, fileName: fileName,
                 fileContent: fileContent,
@@ -562,6 +574,35 @@ struct PierreDiffWebView: NSViewRepresentable {
             )
             webView.loadHTMLString(html, baseURL: URL(string: "https://esm.sh/"))
         }
+    }
+
+    private static func draftSignature(for draftComments: [TerminalLocalReviewComment]) -> String {
+        draftComments
+            .sorted { $0.id.uuidString < $1.id.uuidString }
+            .map {
+                [
+                    $0.id.uuidString,
+                    "\($0.startLine)",
+                    "\($0.endLine)",
+                    $0.side,
+                    $0.text,
+                ].joined(separator: "|")
+            }
+            .joined(separator: "\n")
+    }
+
+    private static func reviewThreadSignature(
+        for reviewThread: TerminalPullRequestReviewThread?
+    ) -> String {
+        guard let reviewThread else { return "nil" }
+        return [
+            reviewThread.id,
+            reviewThread.isResolved ? "resolved" : "open",
+            reviewThread.isOutdated ? "outdated" : "current",
+            "\(reviewThread.comments.count)",
+            reviewThread.comments.last?.id ?? "",
+            "\(reviewThread.updatedAt.timeIntervalSince1970)",
+        ].joined(separator: "|")
     }
 
     class Coordinator: NSObject, WKScriptMessageHandler {
@@ -573,7 +614,10 @@ struct PierreDiffWebView: NSViewRepresentable {
         var onDeleteDraft: (_ commentID: String) -> Void
         weak var webView: WKWebView?
         var lastDiffText: String?
-        var lastDraftCount: Int = 0
+        var lastDraftSignature: String = ""
+        var lastReviewThreadSignature: String = "nil"
+        var lastFileName: String = ""
+        var lastIsReviewMode = false
 
         init(
             onLinesSelected: @escaping (_ startLine: Int, _ endLine: Int, _ side: String) -> Void,
@@ -1467,16 +1511,11 @@ struct PRThreadCommentsUberBox: View {
     }
 
     private func sendToChat() -> String? {
-        guard let surface = controller.focusedSurface, let surfaceModel = surface.surfaceModel else {
-            return "No active terminal session. Open a terminal first."
+        let result = controller.sendPRThreadCommentsToChat(editableText)
+        if result == nil {
+            editableText = ""
         }
-
-        let trimmed = editableText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "No comments to send." }
-
-        let message = "Please address the following PR review comments:\n\n\(trimmed)\n"
-        surfaceModel.sendText(message)
-        return nil
+        return result
     }
 }
 
@@ -1734,30 +1773,7 @@ struct PierreCombinedDiffWebView: NSViewRepresentable {
                         diffStyle: 'split',
                         overflow: 'scroll',
                         lineHoverHighlight: 'both',
-                        hunkSeparators(hunkData) {
-                            const wrapper = document.createElement('div');
-                            wrapper.style.gridColumn = 'span 2';
-                            const inner = document.createElement('div');
-                            inner.style.cssText = 'position: sticky; left: 0; width: var(--diffs-column-width); display: flex; align-items: center; gap: 8px;';
-                            const lineText = document.createElement('span');
-                            lineText.textContent = (hunkData.lines || '') + ' unmodified lines';
-                            inner.appendChild(lineText);
-                            const ctx = hunkData.hunkContext || hunkData.context || hunkData.header || hunkData.section || '';
-                            if (ctx) {
-                                const ctxSpan = document.createElement('span');
-                                ctxSpan.textContent = ctx;
-                                ctxSpan.style.cssText = 'color: #8b949e; font-style: italic;';
-                                inner.appendChild(ctxSpan);
-                            }
-                            if (!ctx) {
-                                const dbg = document.createElement('span');
-                                dbg.textContent = '[keys: ' + Object.keys(hunkData).join(',') + ']';
-                                dbg.style.cssText = 'color: #f85149; font-size: 10px;';
-                                inner.appendChild(dbg);
-                            }
-                            wrapper.appendChild(inner);
-                            return wrapper;
-                        },
+                        hunkSeparators: 'line-info',
                         expansionLineCount: 20,
                     });
 

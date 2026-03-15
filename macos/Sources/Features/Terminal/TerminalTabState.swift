@@ -221,6 +221,10 @@ final class TerminalTabState: ObservableObject, Identifiable {
         pullRequestStatusMessage = statusMessage
         pullRequestLastUpdatedAt = refreshedAt
         isPullRequestRefreshing = false
+
+        if let activeThreadID = activeReviewThread?.id {
+            activeReviewThread = threads.first { $0.id == activeThreadID }
+        }
     }
 
     func setPullRequestError(
@@ -380,5 +384,77 @@ final class TerminalTabState: ObservableObject, Identifiable {
 
     func clearPRThreadComments() {
         prThreadReviewComments.removeAll()
+    }
+
+    func replaceReviewThread(_ thread: TerminalPullRequestReviewThread) {
+        if let threadIndex = reviewThreads.firstIndex(where: { $0.id == thread.id }) {
+            var updatedThreads = reviewThreads
+            updatedThreads[threadIndex] = thread
+            reviewThreads = updatedThreads
+        }
+
+        if activeReviewThread?.id == thread.id {
+            activeReviewThread = thread
+        }
+    }
+
+    func appendOptimisticReply(toThreadID threadID: String, body: String) {
+        guard let existingThread = reviewThreads.first(where: { $0.id == threadID }) ?? activeReviewThread,
+              existingThread.id == threadID else {
+            return
+        }
+
+        let optimisticComment = TerminalPullRequestReviewComment(
+            id: "local-reply-\(UUID().uuidString)",
+            body: body,
+            url: existingThread.comments.last?.url ?? URL(string: "https://github.com")!,
+            authorLogin: "you",
+            createdAt: Date(),
+            path: existingThread.path,
+            line: existingThread.line,
+            originalLine: existingThread.originalLine,
+            startLine: existingThread.startLine,
+            originalStartLine: existingThread.originalStartLine,
+            replyToID: existingThread.comments.last?.id
+        )
+
+        let updatedThread = TerminalPullRequestReviewThread(
+            id: existingThread.id,
+            path: existingThread.path,
+            line: existingThread.line,
+            originalLine: existingThread.originalLine,
+            startLine: existingThread.startLine,
+            originalStartLine: existingThread.originalStartLine,
+            diffSide: existingThread.diffSide,
+            isResolved: existingThread.isResolved,
+            isOutdated: existingThread.isOutdated,
+            comments: existingThread.comments + [optimisticComment],
+            hasMoreComments: existingThread.hasMoreComments
+        )
+
+        replaceReviewThread(updatedThread)
+    }
+
+    func setReviewThreadResolved(threadID: String, isResolved: Bool) {
+        guard let existingThread = reviewThreads.first(where: { $0.id == threadID }) ?? activeReviewThread,
+              existingThread.id == threadID else {
+            return
+        }
+
+        let updatedThread = TerminalPullRequestReviewThread(
+            id: existingThread.id,
+            path: existingThread.path,
+            line: existingThread.line,
+            originalLine: existingThread.originalLine,
+            startLine: existingThread.startLine,
+            originalStartLine: existingThread.originalStartLine,
+            diffSide: existingThread.diffSide,
+            isResolved: isResolved,
+            isOutdated: existingThread.isOutdated,
+            comments: existingThread.comments,
+            hasMoreComments: existingThread.hasMoreComments
+        )
+
+        replaceReviewThread(updatedThread)
     }
 }
