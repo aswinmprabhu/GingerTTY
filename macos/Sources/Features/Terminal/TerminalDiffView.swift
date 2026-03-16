@@ -179,11 +179,13 @@ struct WebViewFindBar: View {
     var body: some View {
         if model.isVisible {
             HStack(spacing: 6) {
-                FindBarTextField(
+                TerminalNativeSearchField(
                     text: $model.searchText,
+                    placeholder: "Find…",
                     onReturn: { model.findNext() },
                     onShiftReturn: { model.findPrevious() },
-                    onEscape: { model.hide() }
+                    onEscape: { model.hide() },
+                    onTextDidChange: { model.findNext() }
                 )
                 .frame(width: 200)
 
@@ -217,86 +219,16 @@ struct WebViewFindBar: View {
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.horizontal, 10)
+            .padding(.horizontal, 8)
             .padding(.vertical, 6)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color(nsColor: .windowBackgroundColor))
-                    .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
+                .ultraThinMaterial,
+                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
             )
+            .shadow(color: .black.opacity(0.06), radius: 10, y: 4)
             .padding(8)
             .transition(.move(edge: .top).combined(with: .opacity))
         }
-    }
-}
-
-private struct FindBarTextField: NSViewRepresentable {
-    @Binding var text: String
-    var onReturn: () -> Void
-    var onShiftReturn: () -> Void
-    var onEscape: () -> Void
-
-    func makeNSView(context: Context) -> NSTextField {
-        let field = FindBarNSTextField()
-        field.placeholderString = "Find…"
-        field.isBordered = true
-        field.bezelStyle = .roundedBezel
-        field.font = .systemFont(ofSize: 12)
-        field.delegate = context.coordinator
-        field.onReturn = onReturn
-        field.onShiftReturn = onShiftReturn
-        field.onEscape = onEscape
-        DispatchQueue.main.async { field.window?.makeFirstResponder(field) }
-        return field
-    }
-
-    func updateNSView(_ nsView: NSTextField, context: Context) {
-        if nsView.stringValue != text { nsView.stringValue = text }
-        if let f = nsView as? FindBarNSTextField {
-            f.onReturn = onReturn
-            f.onShiftReturn = onShiftReturn
-            f.onEscape = onEscape
-        }
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator(text: $text, onReturn: onReturn) }
-
-    class Coordinator: NSObject, NSTextFieldDelegate {
-        @Binding var text: String
-        var onReturn: () -> Void
-        init(text: Binding<String>, onReturn: @escaping () -> Void) {
-            _text = text
-            self.onReturn = onReturn
-        }
-        func controlTextDidChange(_ notification: Notification) {
-            guard let f = notification.object as? NSTextField else { return }
-            text = f.stringValue
-            onReturn()
-        }
-    }
-}
-
-private class FindBarNSTextField: NSTextField {
-    var onReturn: (() -> Void)?
-    var onShiftReturn: (() -> Void)?
-    var onEscape: (() -> Void)?
-
-    override func keyUp(with event: NSEvent) {
-        switch event.keyCode {
-        case 36: // Return
-            if event.modifierFlags.contains(.shift) {
-                onShiftReturn?()
-            } else {
-                onReturn?()
-            }
-            return
-        case 53: // Escape
-            onEscape?()
-            return
-        default:
-            break
-        }
-        super.keyUp(with: event)
     }
 }
 
@@ -1199,7 +1131,7 @@ struct PierreDiffWebView: NSViewRepresentable {
                 for (const fileDiff of patch.files) {
 
                     const instance = new FileDiff({
-                        theme: { dark: 'pierre-dark', light: 'pierre-light' },
+                        theme: { dark: 'dark-plus', light: 'light-plus' },
                         themeType: '\(themeType)',
                         diffStyle: 'split',
                         overflow: 'scroll',
@@ -1945,7 +1877,7 @@ struct PierreCombinedDiffWebView: NSViewRepresentable {
             for (const patch of parsedPatches) {
                 for (const fileDiff of patch.files) {
                     const instance = new FileDiff({
-                        theme: { dark: 'pierre-dark', light: 'pierre-light' },
+                        theme: { dark: 'dark-plus', light: 'light-plus' },
                         themeType: '\(themeType)',
                         diffStyle: 'split',
                         overflow: 'scroll',
@@ -2097,7 +2029,7 @@ struct PierreFileWebView: NSViewRepresentable {
             const container = document.getElementById('container');
 
             const instance = new File({
-                theme: { dark: 'pierre-dark', light: 'pierre-light' },
+                theme: { dark: 'dark-plus', light: 'light-plus' },
                 themeType: '\(themeType)',
                 overflow: 'scroll',
                 disableFileHeader: true,

@@ -138,8 +138,9 @@ struct TerminalPRReviewSheet: View {
             .padding(16)
 
             // Search field
-            PRSearchField(
+            TerminalNativeSearchField(
                 text: $model.searchText,
+                placeholder: "Search pull requests…",
                 onArrowDown: { model.moveSelection(down: true) },
                 onArrowUp: { model.moveSelection(down: false) },
                 onReturn: { model.selectCurrent() }
@@ -221,83 +222,6 @@ struct TerminalPRReviewSheet: View {
             }
         }
         .frame(width: 560, height: 450)
-    }
-}
-
-/// NSTextField wrapper that forwards arrow key and Return events to closures
-/// while keeping normal text editing behavior.
-private struct PRSearchField: NSViewRepresentable {
-    @Binding var text: String
-    var onArrowDown: () -> Void
-    var onArrowUp: () -> Void
-    var onReturn: () -> Void
-
-    func makeNSView(context: Context) -> NSTextField {
-        let field = PRSearchNSTextField()
-        field.placeholderString = "Search pull requests…"
-        field.isBordered = true
-        field.bezelStyle = .roundedBezel
-        field.font = .systemFont(ofSize: NSFont.systemFontSize)
-        field.delegate = context.coordinator
-        field.onArrowDown = onArrowDown
-        field.onArrowUp = onArrowUp
-        field.onReturn = onReturn
-        // Focus immediately
-        DispatchQueue.main.async {
-            field.window?.makeFirstResponder(field)
-        }
-        return field
-    }
-
-    func updateNSView(_ nsView: NSTextField, context: Context) {
-        if nsView.stringValue != text {
-            nsView.stringValue = text
-        }
-        if let field = nsView as? PRSearchNSTextField {
-            field.onArrowDown = onArrowDown
-            field.onArrowUp = onArrowUp
-            field.onReturn = onReturn
-        }
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text)
-    }
-
-    class Coordinator: NSObject, NSTextFieldDelegate {
-        @Binding var text: String
-
-        init(text: Binding<String>) {
-            _text = text
-        }
-
-        func controlTextDidChange(_ notification: Notification) {
-            guard let field = notification.object as? NSTextField else { return }
-            text = field.stringValue
-        }
-    }
-}
-
-private class PRSearchNSTextField: NSTextField {
-    var onArrowDown: (() -> Void)?
-    var onArrowUp: (() -> Void)?
-    var onReturn: (() -> Void)?
-
-    override func keyUp(with event: NSEvent) {
-        switch event.keyCode {
-        case 125: // down arrow
-            onArrowDown?()
-            return
-        case 126: // up arrow
-            onArrowUp?()
-            return
-        case 36: // return
-            onReturn?()
-            return
-        default:
-            break
-        }
-        super.keyUp(with: event)
     }
 }
 

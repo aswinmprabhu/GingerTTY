@@ -40,11 +40,11 @@ struct MonacoEditorWebView: NSViewRepresentable {
         context.coordinator.webView = webView
         context.coordinator.lastFilePath = filePath
         context.coordinator.lastContent = content
-        context.coordinator.lastThemeType = theme.pierreThemeType
+        context.coordinator.lastThemeName = theme.monacoThemeName
         editorModel?.webView = webView
 
         guard let resources = Self.monacoResources else {
-            webView.loadHTMLString(Self.errorHTML(message: Self.resourceMissingMessage), baseURL: nil)
+            webView.loadHTMLString(Self.errorHTML(message: Self.resourceMissingMessage, theme: theme), baseURL: nil)
             return webView
         }
 
@@ -64,10 +64,10 @@ struct MonacoEditorWebView: NSViewRepresentable {
         if context.coordinator.lastFilePath != filePath {
             context.coordinator.lastFilePath = filePath
             context.coordinator.lastContent = content
-            context.coordinator.lastThemeType = theme.pierreThemeType
+            context.coordinator.lastThemeName = theme.monacoThemeName
             context.coordinator.isReady = false
             guard let resources = Self.monacoResources else {
-                webView.loadHTMLString(Self.errorHTML(message: Self.resourceMissingMessage), baseURL: nil)
+                webView.loadHTMLString(Self.errorHTML(message: Self.resourceMissingMessage, theme: theme), baseURL: nil)
                 return
             }
             let html = Self.buildHTML(
@@ -80,29 +80,38 @@ struct MonacoEditorWebView: NSViewRepresentable {
             return
         }
 
-        let themeChanged = context.coordinator.lastThemeType != theme.pierreThemeType
+        let themeChanged = context.coordinator.lastThemeName != theme.monacoThemeName
         let contentChanged = context.coordinator.lastContent != content
         guard themeChanged || contentChanged else { return }
 
         context.coordinator.lastContent = content
-        context.coordinator.lastThemeType = theme.pierreThemeType
+        context.coordinator.lastThemeName = theme.monacoThemeName
 
-        if context.coordinator.isReady, contentChanged, !themeChanged {
-            let setValueJS = "window.__gingerttySetValue && window.__gingerttySetValue(\(Self.escapeJSONString(content)));"
-            webView.evaluateJavaScript(setValueJS)
-        } else {
-            guard let resources = Self.monacoResources else {
-                webView.loadHTMLString(Self.errorHTML(message: Self.resourceMissingMessage), baseURL: nil)
+        if context.coordinator.isReady {
+            if contentChanged && !themeChanged {
+                let setValueJS = "window.__gingerttySetValue && window.__gingerttySetValue(\(Self.escapeJSONString(content)));"
+                webView.evaluateJavaScript(setValueJS)
                 return
             }
-            let html = Self.buildHTML(
-                filePath: filePath,
-                content: content,
-                theme: theme,
-                workerPaths: resources.workerPaths
-            )
-            webView.loadHTMLString(html, baseURL: resources.baseURL)
+
+            if themeChanged && !contentChanged {
+                let setThemeJS = "window.__gingerttySetTheme && window.__gingerttySetTheme(\(Self.escapeJSONString(theme.monacoThemeName)));"
+                webView.evaluateJavaScript(setThemeJS)
+                return
+            }
         }
+
+        guard let resources = Self.monacoResources else {
+            webView.loadHTMLString(Self.errorHTML(message: Self.resourceMissingMessage, theme: theme), baseURL: nil)
+            return
+        }
+        let html = Self.buildHTML(
+            filePath: filePath,
+            content: content,
+            theme: theme,
+            workerPaths: resources.workerPaths
+        )
+        webView.loadHTMLString(html, baseURL: resources.baseURL)
     }
 
     private struct MonacoResources {
@@ -191,7 +200,6 @@ struct MonacoEditorWebView: NSViewRepresentable {
         let escapedShellForeground = escapeJSString(theme.shellForegroundHex)
         let escapedError = escapeJSString(theme.errorHex)
         let escapedMonacoThemeName = escapeJSString(theme.monacoThemeName)
-        let monacoThemeDefinition = theme.monacoDefinitionJSON
 
         return """
         <!DOCTYPE html>
@@ -268,7 +276,6 @@ struct MonacoEditorWebView: NSViewRepresentable {
         const shellForeground = '\(escapedShellForeground)';
         const errorText = '\(escapedError)';
         const monacoThemeName = '\(escapedMonacoThemeName)';
-        const monacoThemeDefinition = \(monacoThemeDefinition);
         let editor = null;
         let suppressContentEvents = false;
         let changeTimer = null;
@@ -308,12 +315,16 @@ struct MonacoEditorWebView: NSViewRepresentable {
             editor.getAction('actions.find').run();
         };
 
+        window.__gingerttySetTheme = function(themeName) {
+            if (!editor) return;
+            monaco.editor.setTheme(themeName);
+        };
+
         if (typeof require === 'undefined') {
             showError('Failed to load Monaco loader from the app bundle.');
         } else {
         require.config({ paths: { vs: 'vs' } });
         require(['vs/editor/editor.main'], function() {
-            monaco.editor.defineTheme(monacoThemeName, monacoThemeDefinition);
             const model = monaco.editor.createModel(initialContent, initialLanguage);
             editor = monaco.editor.create(document.getElementById('container'), {
                 model,
@@ -331,6 +342,7 @@ struct MonacoEditorWebView: NSViewRepresentable {
                 insertSpaces: true,
                 wordWrap: 'off',
             });
+            monaco.editor.setTheme(monacoThemeName);
 
             document.body.style.background = shellBackground;
             document.body.style.color = shellForeground;
@@ -360,7 +372,7 @@ struct MonacoEditorWebView: NSViewRepresentable {
         """
     }
 
-    private static func errorHTML(message: String) -> String {
+    private static func errorHTML(message: String, theme: TerminalCodeTheme) -> String {
         """
         <!DOCTYPE html>
         <html>
@@ -371,8 +383,8 @@ struct MonacoEditorWebView: NSViewRepresentable {
                 margin: 0;
                 width: 100%;
                 height: 100%;
-                background: #0b1220;
-                color: #fca5a5;
+                background: \(theme.shellBackgroundHex);
+                color: \(theme.errorHex);
                 font-family: -apple-system, BlinkMacSystemFont, sans-serif;
             }
             body {
@@ -448,7 +460,7 @@ struct MonacoEditorWebView: NSViewRepresentable {
         weak var webView: WKWebView?
         var lastFilePath: String = ""
         var lastContent: String = ""
-        var lastThemeType: String = ""
+        var lastThemeName: String = ""
         var isReady = false
 
         init(
