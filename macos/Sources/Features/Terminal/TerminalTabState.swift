@@ -105,6 +105,7 @@ final class TerminalTabState: ObservableObject, Identifiable {
     // MARK: File viewer state
 
     @Published var viewerFilePath: String?
+    @Published private(set) var viewerLayoutMode: TerminalFileViewerLayoutMode = .editorOnly
     @Published var viewerOriginalContent: String?
     @Published var viewerFileContent: String?
     @Published var isViewerLoading: Bool = false
@@ -302,6 +303,7 @@ final class TerminalTabState: ObservableObject, Identifiable {
         combinedDiffRawText = nil
         isCombinedDiffLoading = false
         viewerFilePath = nil
+        viewerLayoutMode = .editorOnly
         viewerOriginalContent = nil
         viewerFileContent = nil
         isViewerLoading = false
@@ -339,6 +341,7 @@ final class TerminalTabState: ObservableObject, Identifiable {
 
     func openFileViewer(path: String) {
         viewerFilePath = path
+        viewerLayoutMode = .forFilePath(path)
         viewerOriginalContent = nil
         viewerFileContent = nil
         isViewerLoading = true
@@ -406,6 +409,7 @@ final class TerminalTabState: ObservableObject, Identifiable {
 
     func closeFileViewer() {
         viewerFilePath = nil
+        viewerLayoutMode = .editorOnly
         viewerOriginalContent = nil
         viewerFileContent = nil
         isViewerLoading = false
@@ -425,6 +429,7 @@ final class TerminalTabState: ObservableObject, Identifiable {
         diffFileContent = nil
         isDiffLoading = false
         viewerFilePath = nil
+        viewerLayoutMode = .editorOnly
         viewerOriginalContent = nil
         viewerFileContent = nil
         isViewerLoading = false

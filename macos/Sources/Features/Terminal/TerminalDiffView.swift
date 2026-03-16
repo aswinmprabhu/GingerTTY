@@ -1551,9 +1551,23 @@ struct TerminalFileViewerView: View {
     @ObservedObject var controller: TerminalController
     @ObservedObject var tab: TerminalTabState
     @StateObject private var editorModel = MonacoEditorModel()
+    @State private var markdownPreviewWidth: CGFloat = 420
+
+    private let markdownPreviewMinWidth: CGFloat = 280
+    private let markdownPreviewMaxWidth: CGFloat = 760
+    private let markdownEditorMinWidth: CGFloat = 320
+    private let fileViewerDividerWidth: CGFloat = 5
 
     private var codeTheme: TerminalCodeTheme {
         .forColorScheme(colorScheme)
+    }
+
+    private var viewerDocumentURL: URL? {
+        guard let root = tab.repositoryRoot,
+              let relativePath = tab.viewerFilePath else {
+            return nil
+        }
+        return URL(fileURLWithPath: root).appendingPathComponent(relativePath)
     }
 
     var body: some View {
@@ -1638,18 +1652,29 @@ struct TerminalFileViewerView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let content = tab.viewerFileContent,
                       let path = tab.viewerFilePath {
-                MonacoEditorWebView(
-                    filePath: path,
-                    content: content,
-                    theme: codeTheme,
-                    editorModel: editorModel,
-                    onContentChanged: { content in
-                        controller.updateViewerDraftContent(content)
-                    },
-                    onSaveRequested: { content in
-                        controller.saveViewerFile(contentOverride: content)
+                if tab.viewerLayoutMode == .markdownSplitPreview {
+                    GeometryReader { proxy in
+                        let splitLayout = markdownSplitLayout(in: proxy.size.width)
+
+                        HStack(spacing: 0) {
+                            editorPane(content: content, path: path)
+                                .frame(width: splitLayout.editorWidth)
+                                .frame(maxHeight: .infinity)
+
+                            FileViewerResizableDivider(
+                                dimension: $markdownPreviewWidth,
+                                minValue: markdownPreviewMinWidth,
+                                maxValue: splitLayout.previewMaxWidth,
+                                inverted: true
+                            )
+
+                            previewPane(content: content, width: splitLayout.previewWidth)
+                        }
                     }
-                )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    editorPane(content: content, path: path)
+                }
             } else if let error = tab.viewerLoadError, !error.isEmpty {
                 VStack(spacing: 8) {
                     Text("File could not be read.")
@@ -1670,6 +1695,98 @@ struct TerminalFileViewerView: View {
                 .padding(14)
             }
         }
+    }
+
+    private func editorPane(content: String, path: String) -> some View {
+        MonacoEditorWebView(
+            filePath: path,
+            content: content,
+            theme: codeTheme,
+            editorModel: editorModel,
+            onContentChanged: { content in
+                controller.updateViewerDraftContent(content)
+            },
+            onSaveRequested: { content in
+                controller.saveViewerFile(contentOverride: content)
+            }
+        )
+    }
+
+    private func previewPane(content: String, width: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Preview")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+
+            Divider()
+
+            MonacoMarkdownPreviewWebView(
+                content: content,
+                theme: codeTheme,
+                documentURL: viewerDocumentURL
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(width: width)
+        .frame(maxHeight: .infinity)
+        .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    private func markdownSplitLayout(in totalWidth: CGFloat) -> (editorWidth: CGFloat, previewWidth: CGFloat, previewMaxWidth: CGFloat) {
+        let availableWidth = max(totalWidth, markdownEditorMinWidth + markdownPreviewMinWidth + fileViewerDividerWidth)
+        let previewMaxWidth = max(
+            markdownPreviewMinWidth,
+            min(markdownPreviewMaxWidth, availableWidth - markdownEditorMinWidth - fileViewerDividerWidth)
+        )
+        let previewWidth = min(max(markdownPreviewWidth, markdownPreviewMinWidth), previewMaxWidth)
+        let editorWidth = max(markdownEditorMinWidth, availableWidth - previewWidth - fileViewerDividerWidth)
+        return (editorWidth, previewWidth, previewMaxWidth)
+    }
+}
+
+private struct FileViewerResizableDivider: View {
+    @Binding var dimension: CGFloat
+    let minValue: CGFloat
+    let maxValue: CGFloat
+    var inverted: Bool = false
+
+    @State private var isDragging = false
+    @State private var dragStartWidth: CGFloat = 0
+
+    var body: some View {
+        Rectangle()
+            .fill(isDragging ? Color.accentColor.opacity(0.6) : Color(nsColor: .separatorColor))
+            .frame(width: 1)
+            .padding(.horizontal, 2)
+            .frame(width: 5)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                if hovering {
+                    NSCursor.resizeLeftRight.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        if !isDragging {
+                            isDragging = true
+                            dragStartWidth = dimension
+                        }
+                        let delta = inverted ? -value.translation.width : value.translation.width
+                        let newWidth = dragStartWidth + delta
+                        dimension = min(max(newWidth, minValue), maxValue)
+                    }
+                    .onEnded { _ in
+                        isDragging = false
+                    }
+            )
     }
 }
 

@@ -81,6 +81,7 @@ struct TerminalTabStateTests {
         tab.openFileViewer(path: "Sources/App.swift")
 
         #expect(tab.viewerFilePath == "Sources/App.swift")
+        #expect(tab.viewerLayoutMode == .editorOnly)
         #expect(tab.viewerOriginalContent == nil)
         #expect(tab.viewerFileContent == nil)
         #expect(tab.isViewerLoading == true)
@@ -110,6 +111,28 @@ struct TerminalTabStateTests {
     }
 
     @Test
+    func markdownDraftEditsStillMarkViewerDirty() {
+        let tab = TerminalTabState()
+
+        tab.openFileViewer(path: "README.md")
+
+        #expect(tab.viewerLayoutMode == .markdownSplitPreview)
+        tab.setViewerLoadedContent("# GingerTTY\n")
+
+        #expect(tab.isViewerDirty == false)
+        #expect(tab.canSaveViewerFile == false)
+        #expect(tab.canRevertViewerFile == false)
+
+        tab.setViewerDraftContent("# GingerTTY Preview\n")
+
+        #expect(tab.viewerFileContent == "# GingerTTY Preview\n")
+        #expect(tab.viewerOriginalContent == "# GingerTTY\n")
+        #expect(tab.isViewerDirty == true)
+        #expect(tab.canSaveViewerFile == true)
+        #expect(tab.canRevertViewerFile == true)
+    }
+
+    @Test
     func completeViewerSavePromotesDraftToOriginal() {
         let tab = TerminalTabState()
 
@@ -128,6 +151,24 @@ struct TerminalTabStateTests {
     }
 
     @Test
+    func markdownSavePromotesDraftToOriginal() {
+        let tab = TerminalTabState()
+
+        tab.openFileViewer(path: "README.md")
+        tab.setViewerLoadedContent("# GingerTTY\n")
+        tab.setViewerDraftContent("# GingerTTY Preview\n")
+        tab.beginViewerSave()
+        tab.completeViewerSave(with: "# GingerTTY Preview\n")
+
+        #expect(tab.viewerOriginalContent == "# GingerTTY Preview\n")
+        #expect(tab.viewerFileContent == "# GingerTTY Preview\n")
+        #expect(tab.isViewerDirty == false)
+        #expect(tab.isViewerSaving == false)
+        #expect(tab.viewerSaveError == nil)
+        #expect(tab.canSaveViewerFile == false)
+    }
+
+    @Test
     func closeFileViewerClearsViewerEditingState() {
         let tab = TerminalTabState()
 
@@ -139,6 +180,7 @@ struct TerminalTabStateTests {
         tab.closeFileViewer()
 
         #expect(tab.viewerFilePath == nil)
+        #expect(tab.viewerLayoutMode == .editorOnly)
         #expect(tab.viewerOriginalContent == nil)
         #expect(tab.viewerFileContent == nil)
         #expect(tab.isViewerLoading == false)
