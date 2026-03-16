@@ -8,67 +8,30 @@ struct TerminalCodeTheme {
     let mutedHex: String
     let errorHex: String
     let monacoThemeName: String
-    let pierreThemeType: String
+
+    var pierreThemeType: String {
+        isDark ? "dark" : "light"
+    }
 
     static func forColorScheme(_ colorScheme: ColorScheme) -> TerminalCodeTheme {
-        if colorScheme == .dark {
-            return TerminalCodeTheme(
-                isDark: true,
-                shellBackgroundHex: "#0b1220",
-                shellForegroundHex: "#e5e7eb",
-                mutedHex: "#94a3b8",
-                errorHex: "#fca5a5",
-                monacoThemeName: "gingertty-dark",
-                pierreThemeType: "dark"
-            )
-        }
-
-        return TerminalCodeTheme(
-            isDark: false,
-            shellBackgroundHex: "#f8fafc",
-            shellForegroundHex: "#0f172a",
-            mutedHex: "#64748b",
-            errorHex: "#dc2626",
-            monacoThemeName: "gingertty-light",
-            pierreThemeType: "light"
-        )
+        colorScheme == .light ? vscodeLight : vscodeDark
     }
 
-    var monacoDefinitionJSON: String {
-        let definition: [String: Any] = isDark
-            ? [
-                "base": "vs-dark",
-                "inherit": true,
-                "rules": [],
-                "colors": [
-                    "editor.background": shellBackgroundHex,
-                    "editor.foreground": shellForegroundHex,
-                    "editorLineNumber.foreground": "#64748b",
-                    "editorLineNumber.activeForeground": "#e5e7eb",
-                    "editor.lineHighlightBackground": "#0f172a",
-                    "editor.selectionBackground": "#1d4ed8",
-                    "editor.inactiveSelectionBackground": "#1e3a8a",
-                    "editorCursor.foreground": "#93c5fd",
-                ],
-            ]
-            : [
-                "base": "vs",
-                "inherit": true,
-                "rules": [],
-                "colors": [
-                    "editor.background": shellBackgroundHex,
-                    "editor.foreground": shellForegroundHex,
-                    "editorLineNumber.foreground": "#94a3b8",
-                    "editorLineNumber.activeForeground": "#0f172a",
-                    "editor.lineHighlightBackground": "#e2e8f0",
-                    "editor.selectionBackground": "#bfdbfe",
-                    "editor.inactiveSelectionBackground": "#dbeafe",
-                    "editorCursor.foreground": "#2563eb",
-                ],
-            ]
+    private static let vscodeDark = TerminalCodeTheme(
+        isDark: true,
+        shellBackgroundHex: "#1E1E1E",
+        shellForegroundHex: "#D4D4D4",
+        mutedHex: "#858585",
+        errorHex: "#F14C4C",
+        monacoThemeName: "vs-dark"
+    )
 
-        let data = try? JSONSerialization.data(withJSONObject: definition, options: [.sortedKeys])
-        return (data.flatMap { String(data: $0, encoding: .utf8) } ?? "{}")
-            .replacingOccurrences(of: "</", with: "<\\/")
-    }
+    private static let vscodeLight = TerminalCodeTheme(
+        isDark: false,
+        shellBackgroundHex: "#FFFFFF",
+        shellForegroundHex: "#000000",
+        mutedHex: "#6E6E6E",
+        errorHex: "#A1260D",
+        monacoThemeName: "vs"
+    )
 }

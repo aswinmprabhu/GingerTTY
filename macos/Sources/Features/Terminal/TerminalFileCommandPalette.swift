@@ -218,8 +218,9 @@ struct TerminalFileCommandPalette: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            FileCommandSearchField(
+            TerminalNativeSearchField(
                 text: $model.searchText,
+                placeholder: "Search files by name…",
                 onArrowDown: { model.moveSelection(down: true) },
                 onArrowUp: { model.moveSelection(down: false) },
                 onReturn: { model.selectCurrent() },
@@ -329,83 +330,3 @@ private struct FileCommandRow: View {
     }
 }
 
-private struct FileCommandSearchField: NSViewRepresentable {
-    @Binding var text: String
-    var onArrowDown: () -> Void
-    var onArrowUp: () -> Void
-    var onReturn: () -> Void
-    var onEscape: () -> Void
-
-    func makeNSView(context: Context) -> NSTextField {
-        let field = FileCommandNSTextField()
-        field.placeholderString = "Search files by name…"
-        field.isBordered = true
-        field.bezelStyle = .roundedBezel
-        field.font = .systemFont(ofSize: NSFont.systemFontSize)
-        field.delegate = context.coordinator
-        field.onArrowDown = onArrowDown
-        field.onArrowUp = onArrowUp
-        field.onReturn = onReturn
-        field.onEscape = onEscape
-        DispatchQueue.main.async {
-            field.window?.makeFirstResponder(field)
-        }
-        return field
-    }
-
-    func updateNSView(_ nsView: NSTextField, context: Context) {
-        if nsView.stringValue != text {
-            nsView.stringValue = text
-        }
-        if let field = nsView as? FileCommandNSTextField {
-            field.onArrowDown = onArrowDown
-            field.onArrowUp = onArrowUp
-            field.onReturn = onReturn
-            field.onEscape = onEscape
-        }
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text)
-    }
-
-    class Coordinator: NSObject, NSTextFieldDelegate {
-        @Binding var text: String
-
-        init(text: Binding<String>) {
-            _text = text
-        }
-
-        func controlTextDidChange(_ notification: Notification) {
-            guard let field = notification.object as? NSTextField else { return }
-            text = field.stringValue
-        }
-    }
-}
-
-private class FileCommandNSTextField: NSTextField {
-    var onArrowDown: (() -> Void)?
-    var onArrowUp: (() -> Void)?
-    var onReturn: (() -> Void)?
-    var onEscape: (() -> Void)?
-
-    override func keyUp(with event: NSEvent) {
-        switch event.keyCode {
-        case 125: // down arrow
-            onArrowDown?()
-            return
-        case 126: // up arrow
-            onArrowUp?()
-            return
-        case 36: // return
-            onReturn?()
-            return
-        case 53: // escape
-            onEscape?()
-            return
-        default:
-            break
-        }
-        super.keyUp(with: event)
-    }
-}
