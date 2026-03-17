@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# GingerTTY wrapper for Claude Code — injects hooks for tab status indicators.
+#
+# When running inside GingerTTY (GINGERTTY is set), this wrapper intercepts
+# `claude` invocations to inject --settings hooks that update tab status via
+# AppleScript. Outside GingerTTY, it passes through to the real claude binary.
+
+# Find the real claude binary, skipping our own directory.
+find_real_claude() {
+    local self_dir
+    self_dir="$(cd "$(dirname "$0")" && pwd)"
+    local IFS=:
+    for d in $PATH; do
+        [[ "$d" == "$self_dir" ]] && continue
+        [[ -x "$d/claude" ]] && printf '%s' "$d/claude" && return 0
+    done
+    return 1
+}
+
+# Pass through if not in GingerTTY
+if [[ -z "$GINGERTTY" ]]; then
+    REAL_CLAUDE="$(find_real_claude)" || { echo "Error: claude not found in PATH" >&2; exit 127; }
+    exec "$REAL_CLAUDE" "$@"
+fi
+
+# Prevent recursive wrapping
+if [[ -n "$GINGERTTY_CLAUDE_WRAPPED" ]]; then
+    REAL_CLAUDE="$(find_real_claude)" || { echo "Error: claude not found in PATH" >&2; exit 127; }
+    exec "$REAL_CLAUDE" "$@"
+fi
+export GINGERTTY_CLAUDE_WRAPPED=1
+
+REAL_CLAUDE="$(find_real_claude)" || { echo "Error: claude not found in PATH" >&2; exit 127; }
+
+# Pass through subcommands that don't support session/hook flags.
+case "${1:-}" in
+    mcp|config|api-key) exec "$REAL_CLAUDE" "$@" ;;
+esac
+
+# Unset CLAUDECODE to avoid "nested session" detection.
+unset CLAUDECODE
+
+# Check if the user already specified a session/resume flag.
+SKIP_SESSION_ID=false
+for arg in "$@"; do
+    case "$arg" in
+        --resume|--resume=*|--session-id|--session-id=*|--continue|-c)
+            SKIP_SESSION_ID=true
+            break
+            ;;
+    esac
+done
+
+# Resolve the hook script path.
+HOOK_SCRIPT="${GINGERTTY_BIN_DIR}/gingertty-hook.sh"
+
+# Build hooks settings JSON.
+# - UserPromptSubmit: clears "Need input", sets "Running"
+# - Stop/Notification: sets "Need input"
+# - PreToolUse: async, keeps "Running" status (clears "Need input" after permission grant)
+# - SessionEnd: clears status when Claude exits
+HOOKS_JSON="{\"hooks\":{\"UserPromptSubmit\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${HOOK_SCRIPT} UserPromptSubmit\",\"timeout\":10}]}],\"Stop\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${HOOK_SCRIPT} Stop\",\"timeout\":5,\"async\":true}]}],\"Notification\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${HOOK_SCRIPT} Notification\",\"timeout\":5,\"async\":true}]}],\"PreToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${HOOK_SCRIPT} PreToolUse\",\"timeout\":5,\"async\":true}]}],\"SessionEnd\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${HOOK_SCRIPT} SessionEnd\",\"timeout\":1}]}]}}"
+
+if [[ "$SKIP_SESSION_ID" == true ]]; then
+    exec "$REAL_CLAUDE" --settings "$HOOKS_JSON" "$@"
+else
+    SESSION_ID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+    exec "$REAL_CLAUDE" --session-id "$SESSION_ID" --settings "$HOOKS_JSON" "$@"
+fi

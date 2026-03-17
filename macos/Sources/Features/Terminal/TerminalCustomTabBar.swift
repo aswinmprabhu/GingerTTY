@@ -8,6 +8,7 @@ private struct TerminalTabBarItem: Identifiable {
 
     let title: String
     let subtitle: String?
+    let agentStatus: String?
     let tabColor: TerminalTabColor
     let isSelected: Bool
 
@@ -15,6 +16,7 @@ private struct TerminalTabBarItem: Identifiable {
         controller: TerminalController,
         title: String,
         subtitle: String?,
+        agentStatus: String?,
         tabColor: TerminalTabColor,
         isSelected: Bool
     ) {
@@ -22,6 +24,7 @@ private struct TerminalTabBarItem: Identifiable {
         self.identifier = ObjectIdentifier(controller)
         self.title = title
         self.subtitle = subtitle
+        self.agentStatus = agentStatus
         self.tabColor = tabColor
         self.isSelected = isSelected
     }
@@ -88,6 +91,7 @@ final class TabGroupDataSource: ObservableObject {
                 controller: tabController,
                 title: Self.displayTitle(for: tabController.window),
                 subtitle: Self.subtitle(for: tabController),
+                agentStatus: tabController.tabState.agentStatus,
                 tabColor: (tabController.window as? TerminalWindow)?.tabColor ?? .none,
                 isSelected: tabController === controller
             )
@@ -172,6 +176,17 @@ private struct TerminalTabBarRow: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
+
+                if let status = item.agentStatus {
+                    Label {
+                        Text(status)
+                    } icon: {
+                        Image(systemName: agentStatusIcon(status))
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(agentStatusColor(status))
+                    .lineLimit(1)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -248,6 +263,22 @@ private struct TerminalTabBarRow: View {
                 Color.clear
                     .frame(width: 14, height: 14)
             }
+        }
+    }
+
+    private func agentStatusIcon(_ status: String) -> String {
+        switch status {
+        case "Running": return "bolt.fill"
+        case "Done": return "checkmark.circle.fill"
+        default: return "bell.fill"
+        }
+    }
+
+    private func agentStatusColor(_ status: String) -> Color {
+        switch status {
+        case "Running": return .blue
+        case "Done": return .green
+        default: return .orange
         }
     }
 

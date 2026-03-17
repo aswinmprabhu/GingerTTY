@@ -206,6 +206,39 @@ extension NSApplication {
         terminate(nil)
     }
 
+    /// Handler for the `set agent status` AppleScript command.
+    ///
+    /// Required selector name from the command in `sdef`:
+    /// `handleSetAgentStatusScriptCommand:`.
+    ///
+    /// Sets or clears the agent status indicator displayed as a third line
+    /// on the tab bar. Called by GingerTTY hook scripts via osascript.
+    @objc(handleSetAgentStatusScriptCommand:)
+    func handleSetAgentStatusScriptCommand(_ command: NSScriptCommand) {
+        guard validateScript(command: command) else { return }
+
+        guard let status = command.directParameter as? String else {
+            command.scriptErrorNumber = errAEParamMissed
+            command.scriptErrorString = "Missing status text."
+            return
+        }
+
+        guard let terminal = command.evaluatedArguments?["on"] as? ScriptTerminal else {
+            command.scriptErrorNumber = errAEParamMissed
+            command.scriptErrorString = "Missing terminal target."
+            return
+        }
+
+        guard let surfaceView = terminal.surfaceView,
+              let controller = surfaceView.window?.windowController as? TerminalController else {
+            return
+        }
+
+        let trimmed = status.trimmingCharacters(in: .whitespacesAndNewlines)
+        controller.tabState.setAgentStatus(trimmed.isEmpty ? nil : trimmed)
+        NotificationCenter.default.post(name: .gingerTTYTabGroupDidChange, object: controller.window)
+    }
+
     /// Handler for the `new tab` AppleScript command.
     ///
     /// Required selector name from the command in `sdef`:

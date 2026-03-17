@@ -25,6 +25,9 @@
       <responds-to command="quit">
         <cocoa method="handleQuitScriptCommand:"/>
       </responds-to>
+      <responds-to command="set agent status">
+        <cocoa method="handleSetAgentStatusScriptCommand:"/>
+      </responds-to>
 
       <element type="window" access="r">
         <cocoa key="scriptWindows"/>
@@ -208,6 +211,13 @@
 
     <command name="close window" code="GhstClWn" description="Close a window.">
       <direct-parameter type="specifier" description="The window to close."/>
+    </command>
+
+    <command name="set agent status" code="GhstSASt" description="Set the agent status indicator on a terminal tab.">
+      <direct-parameter type="text" description="The status text (empty string to clear)."/>
+      <parameter name="on" code="GonT" type="terminal" description="Target terminal.">
+        <cocoa key="on"/>
+      </parameter>
     </command>
 
     <command name="input text" code="GhstInTx" description="Input text to a terminal as if it was pasted.">

@@ -86,6 +86,15 @@ if [[ "$GHOSTTY_SHELL_FEATURES" == *"path"* && -n "$GHOSTTY_BIN_DIR" ]]; then
   fi
 fi
 
+# GingerTTY: prepend Resources/bin so CLI wrappers (e.g. claude) are found first.
+if [[ -n "$GINGERTTY_BIN_DIR" && -d "$GINGERTTY_BIN_DIR" ]]; then
+  local _gtt_new=":${PATH}:"
+  _gtt_new="${_gtt_new//:${GINGERTTY_BIN_DIR}:/:}"
+  _gtt_new="${_gtt_new#:}"
+  _gtt_new="${_gtt_new%:}"
+  export PATH="${GINGERTTY_BIN_DIR}:${_gtt_new}"
+fi
+
 # Sudo
 if [[ "$GHOSTTY_SHELL_FEATURES" == *"sudo"* && -n "$TERMINFO" ]]; then
   # Wrap `sudo` command to ensure Ghostty terminfo is preserved.

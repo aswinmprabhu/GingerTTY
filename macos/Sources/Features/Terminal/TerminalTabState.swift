@@ -89,6 +89,10 @@ final class TerminalTabState: ObservableObject, Identifiable {
     @Published var isSubmittingReview: Bool = false
     @Published var reviewSubmitError: String?
 
+    // MARK: Agent status (set via AppleScript by CLI wrappers)
+
+    @Published private(set) var agentStatus: String?
+
     // MARK: Merge state
 
     @Published var mergeInProgress: Bool = false
@@ -159,6 +163,16 @@ final class TerminalTabState: ObservableObject, Identifiable {
 
     func setWorkingDirectory(_ newValue: String?) {
         workingDirectory = newValue
+    }
+
+    func setAgentStatus(_ status: String?) {
+        // Don't let "Need input" overwrite "Done" — a Notification event
+        // often fires right after Stop just to alert the user, not because
+        // the agent actually needs input.
+        if status == "Need input" && agentStatus == "Done" {
+            return
+        }
+        agentStatus = status
     }
 
     func resetRepositoryScopedState() {

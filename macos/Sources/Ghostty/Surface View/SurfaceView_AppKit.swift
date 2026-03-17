@@ -386,7 +386,15 @@ extension Ghostty {
             ) { [weak self] event in self?.localEventHandler(event) }
 
             // Setup our surface. This will also initialize all the terminal IO.
-            let surface_cfg = baseConfig ?? SurfaceConfiguration()
+            // Inject GingerTTY environment variables so wrapper scripts and hooks
+            // can detect they're running inside GingerTTY and target this surface.
+            // PATH is fixed by Ghostty's shell integration (see ghostty-integration).
+            var surface_cfg = baseConfig ?? SurfaceConfiguration()
+            surface_cfg.environmentVariables["GINGERTTY"] = "1"
+            surface_cfg.environmentVariables["GINGERTTY_TERMINAL_ID"] = self.id.uuidString
+            if let binDir = Bundle.main.resourceURL?.appendingPathComponent("bin").path {
+                surface_cfg.environmentVariables["GINGERTTY_BIN_DIR"] = binDir
+            }
             let surface = surface_cfg.withCValue(view: self) { surface_cfg_c in
                 ghostty_surface_new(app, &surface_cfg_c)
             }
