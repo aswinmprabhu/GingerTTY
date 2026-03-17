@@ -1,12 +1,18 @@
 import AppKit
 import SwiftUI
 
+final class SidebarWidthState: ObservableObject {
+    static let shared = SidebarWidthState()
+    @Published var leftTabBarWidth: CGFloat = 200
+    @Published var rightSidebarWidth: CGFloat = 300
+    private init() {}
+}
+
 struct TerminalWindowView: View {
     @ObservedObject var controller: TerminalController
     @ObservedObject private var tab: TerminalTabState
+    @ObservedObject private var sidebarWidths = SidebarWidthState.shared
 
-    @State private var leftTabBarWidth: CGFloat = 200
-    @State private var rightSidebarWidth: CGFloat = 300
     private let leftTabBarMinWidth: CGFloat = 200
     private let leftTabBarMaxWidth: CGFloat = 360
     private let sidebarMinWidth: CGFloat = 200
@@ -23,9 +29,9 @@ struct TerminalWindowView: View {
             if controller.ghostty.config.usesCustomMacOSTabBar {
                 HStack(spacing: 0) {
                     VerticalTabBar(controller: controller)
-                        .frame(width: leftTabBarWidth)
+                        .frame(width: sidebarWidths.leftTabBarWidth)
                     ResizableDivider(
-                        dimension: $leftTabBarWidth,
+                        dimension: $sidebarWidths.leftTabBarWidth,
                         minValue: leftTabBarMinWidth,
                         maxValue: leftTabBarMaxWidth
                     )
@@ -67,14 +73,14 @@ struct TerminalWindowView: View {
                 terminalContent
 
                 ResizableDivider(
-                    dimension: $rightSidebarWidth,
+                    dimension: $sidebarWidths.rightSidebarWidth,
                     minValue: sidebarMinWidth,
                     maxValue: sidebarMaxWidth,
                     inverted: true
                 )
 
                 TerminalRightSidebarView(controller: controller, tab: tab)
-                    .frame(width: rightSidebarWidth)
+                    .frame(width: sidebarWidths.rightSidebarWidth)
             }
         }
     }
