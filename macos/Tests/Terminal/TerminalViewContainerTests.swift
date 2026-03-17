@@ -25,7 +25,7 @@ class MockConfig: Ghostty.Config {
         self._backgroundBlur = backgroundBlur
         self._backgroundColor = backgroundColor
         self._backgroundOpacity = backgroundOpacity
-        super.init(config: nil)
+        super.init(config: nil, customConfig: .init())
     }
 
     var _backgroundBlur: Ghostty.Config.BackgroundBlur
