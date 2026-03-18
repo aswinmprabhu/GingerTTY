@@ -371,7 +371,7 @@ private func createStaleBaseBranchFixture(at temporaryRoot: URL) async throws ->
 
     let latestMainRef = "refs/heads/pr-base"
     _ = try await git(
-        ["fetch", "origin", "refs/heads/main:\(latestMainRef)"],
+        ["fetch", "--no-auto-maintenance", "--refmap=", "origin", "refs/heads/main:\(latestMainRef)"],
         in: workingRepository.path
     )
     _ = try await git(

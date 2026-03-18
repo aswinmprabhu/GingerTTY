@@ -1776,7 +1776,7 @@ actor TerminalRepositoryService {
                 let standardizedPath = URL(fileURLWithPath: path).standardizedFileURL.path
                 let standardizedRoot = URL(fileURLWithPath: repositoryRoot).standardizedFileURL.path
                 if standardizedPath != standardizedRoot {
-                    return path
+                    return standardizedPath
                 }
             }
         }
