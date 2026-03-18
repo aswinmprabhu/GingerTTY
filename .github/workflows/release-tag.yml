@@ -68,3 +68,9 @@ jobs:
         with:
           name: GingerTTY-macos
           path: GingerTTY-macos-universal.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: GingerTTY-macos-universal.zip
+          generate_release_notes: true
