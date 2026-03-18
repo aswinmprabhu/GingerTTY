@@ -8,6 +8,8 @@
   </p>
 </p>
 
+https://github.com/user-attachments/assets/15b35302-72a5-43c0-a1b0-42e653841a00
+
 ## About
 
 GingerTTY is a macOS terminal emulator built for developers who work with CLI agents like [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Codex](https://openai.com/index/codex/). It's a thin SwiftUI wrapper on top of [Ghostty](https://ghostty.org), inheriting its speed, standards compliance, and native Metal renderer while adding features tailored for agentic workflows.
