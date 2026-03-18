@@ -1,0 +1,42 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      ZIG_LOCAL_CACHE_DIR: /Users/runner/zig/local-cache
+      ZIG_GLOBAL_CACHE_DIR: /Users/runner/zig/global-cache
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+
+      - name: XCode Select
+        run: sudo xcode-select -s /Applications/Xcode_16.3.app
+
+      - name: Build GhosttyKit
+        run: zig build -Doptimize=ReleaseFast -Demit-macos-app=false
+
+      - name: Run Tests
+        run: |
+          cd macos
+          env -i HOME="$HOME" PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+            xcodebuild -project Ghostty.xcodeproj -scheme Ghostty \
+            -configuration Debug \
+            -skip-testing GhosttyUITests \
+            test
