@@ -991,7 +991,15 @@ actor TerminalRepositoryService {
         }
     }
 
-    func fetchOpenPullRequests(repositoryRoot: String) async throws -> [TerminalOpenPullRequest] {
+    func fetchRemotes(repositoryRoot: String) async throws -> [String] {
+        let output = try await git(["-C", repositoryRoot, "remote"])
+        return output.stdout
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .filter { !$0.isEmpty }
+    }
+
+    func fetchOpenPullRequests(repositoryRoot: String, remote: String? = nil) async throws -> [TerminalOpenPullRequest] {
         let resolvedRoot: String
         do {
             resolvedRoot = try await git(
@@ -1001,17 +1009,20 @@ actor TerminalRepositoryService {
             throw TerminalRepositoryServiceError.notARepository
         }
 
+        var ghArgs = [
+            "pr", "list",
+            "--state", "open",
+            "--json", "number,title,url,headRefName,author,updatedAt,isDraft",
+            "--limit", "100",
+        ]
+        if let remote,
+           let repoName = await resolveGitHubRepo(remote: remote, repositoryRoot: resolvedRoot) {
+            ghArgs += ["--repo", repoName]
+        }
+
         let output: TerminalCommandOutput
         do {
-            output = try await gh(
-                [
-                    "pr", "list",
-                    "--state", "open",
-                    "--json", "number,title,url,headRefName,author,updatedAt,isDraft",
-                    "--limit", "100",
-                ],
-                currentDirectory: resolvedRoot
-            )
+            output = try await gh(ghArgs, currentDirectory: resolvedRoot)
         } catch let error as TerminalCommandError {
             throw mapGHError(error)
         }
@@ -1044,6 +1055,35 @@ actor TerminalRepositoryService {
              "refs/heads/\(branchName):refs/remotes/origin/\(branchName)"],
             acceptedExitCodes: [0, 1, 128]
         )
+    }
+
+    private func resolveGitHubRepo(remote: String, repositoryRoot: String) async -> String? {
+        guard let output = try? await git(["-C", repositoryRoot, "remote", "get-url", remote]) else {
+            return nil
+        }
+        return Self.parseGitHubRepo(from: output.stdout.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private static func parseGitHubRepo(from urlString: String) -> String? {
+        var s = urlString
+        if s.hasSuffix(".git") { s = String(s.dropLast(4)) }
+
+        // SSH: git@github.com:owner/repo
+        if s.hasPrefix("git@github.com:") {
+            let path = String(s.dropFirst("git@github.com:".count))
+            let parts = path.split(separator: "/", maxSplits: 2)
+            guard parts.count >= 2 else { return nil }
+            return "\(parts[0])/\(parts[1])"
+        }
+
+        // HTTPS: https://github.com/owner/repo
+        if let url = URL(string: s), url.host == "github.com" {
+            let parts = url.pathComponents.filter { $0 != "/" }
+            guard parts.count >= 2 else { return nil }
+            return "\(parts[0])/\(parts[1])"
+        }
+
+        return nil
     }
 
     private func refreshPreferredBaseBranchIfNeeded(

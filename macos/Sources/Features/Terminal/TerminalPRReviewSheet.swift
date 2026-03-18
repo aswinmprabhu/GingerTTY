@@ -12,6 +12,10 @@ final class TerminalPRReviewSheetModel: ObservableObject, Identifiable {
     @Published var isOpening = false
     @Published var errorMessage: String?
     @Published var selectedPRNumber: Int?
+    /// Updated only by keyboard navigation and initial load — drives scroll-to behavior.
+    @Published private(set) var scrollTarget: Int?
+    @Published private(set) var remotes: [String] = []
+    @Published var selectedRemote: String = ""
 
     /// The resolved git root (set after fetching PRs successfully).
     private(set) var resolvedRepositoryRoot: String?
@@ -54,15 +58,25 @@ final class TerminalPRReviewSheetModel: ObservableObject, Identifiable {
         defer { isLoading = false }
 
         do {
-            // Resolve git root first
             let root = try await resolveGitRoot()
             resolvedRepositoryRoot = root
 
+            // Fetch remotes and pick a sensible default if not yet chosen
+            let fetchedRemotes = (try? await repositoryService.fetchRemotes(repositoryRoot: root)) ?? []
+            remotes = fetchedRemotes
+            if selectedRemote.isEmpty || !fetchedRemotes.contains(selectedRemote) {
+                selectedRemote = fetchedRemotes.first(where: { $0 == "origin" }) ?? fetchedRemotes.first ?? ""
+            }
+
+            let remote = selectedRemote.isEmpty ? nil : selectedRemote
             pullRequests = try await repositoryService.fetchOpenPullRequests(
-                repositoryRoot: root
+                repositoryRoot: root,
+                remote: remote
             )
-            // Pre-select first item
-            selectedPRNumber = pullRequests.first?.number
+            // Pre-select first item and scroll to it
+            let firstNumber = pullRequests.first?.number
+            selectedPRNumber = firstNumber
+            scrollTarget = firstNumber
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -90,12 +104,16 @@ final class TerminalPRReviewSheetModel: ObservableObject, Identifiable {
 
         guard let current = selectedPRNumber,
               let idx = list.firstIndex(where: { $0.number == current }) else {
-            selectedPRNumber = list.first?.number
+            let number = list.first?.number
+            selectedPRNumber = number
+            scrollTarget = number
             return
         }
 
         let newIdx = down ? min(idx + 1, list.count - 1) : max(idx - 1, 0)
-        selectedPRNumber = list[newIdx].number
+        let number = list[newIdx].number
+        selectedPRNumber = number
+        scrollTarget = number
     }
 
     func cancel() {
@@ -137,14 +155,31 @@ struct TerminalPRReviewSheet: View {
             }
             .padding(16)
 
-            // Search field
-            TerminalNativeSearchField(
-                text: $model.searchText,
-                placeholder: "Search pull requests…",
-                onArrowDown: { model.moveSelection(down: true) },
-                onArrowUp: { model.moveSelection(down: false) },
-                onReturn: { model.selectCurrent() }
-            )
+            // Search field + remote picker
+            HStack(spacing: 8) {
+                TerminalNativeSearchField(
+                    text: $model.searchText,
+                    placeholder: "Search pull requests…",
+                    onArrowDown: { model.moveSelection(down: true) },
+                    onArrowUp: { model.moveSelection(down: false) },
+                    onReturn: { model.selectCurrent() }
+                )
+
+                if model.remotes.count > 1 {
+                    Picker("", selection: $model.selectedRemote) {
+                        ForEach(model.remotes, id: \.self) { remote in
+                            Text(remote).tag(remote)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .controlSize(.small)
+                    .fixedSize()
+                    .onChange(of: model.selectedRemote) { _ in
+                        Task { await model.loadPullRequests() }
+                    }
+                }
+            }
             .padding(.horizontal, 16)
             .padding(.bottom, 12)
 
@@ -211,7 +246,7 @@ struct TerminalPRReviewSheet: View {
                         }
                         .padding(12)
                     }
-                    .onChange(of: model.selectedPRNumber) { newValue in
+                    .onChange(of: model.scrollTarget) { newValue in
                         if let newValue {
                             withAnimation {
                                 proxy.scrollTo(newValue, anchor: .center)
