@@ -39,4 +39,12 @@ jobs:
             xcodebuild -project Ghostty.xcodeproj -scheme Ghostty \
             -configuration Debug \
             -skip-testing GhosttyUITests \
+            -resultBundlePath ../TestResults.xcresult \
             test
+
+      - name: Print test failures
+        if: failure()
+        run: |
+          xcrun xcresulttool get test-results summary --path TestResults.xcresult 2>/dev/null || true
+          echo "---"
+          xcrun xcresulttool get test-results tests --path TestResults.xcresult 2>/dev/null | grep -A5 -i "fail" || true
