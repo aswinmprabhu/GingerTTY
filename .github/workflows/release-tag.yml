@@ -64,7 +64,7 @@ jobs:
           zip -9 -r --symlinks ../../../GingerTTY-macos-universal.zip GingerTTY.app
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: GingerTTY-macos
           path: GingerTTY-macos-universal.zip
