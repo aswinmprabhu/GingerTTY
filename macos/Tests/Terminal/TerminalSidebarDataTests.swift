@@ -233,6 +233,66 @@ struct TerminalSidebarDataTests {
 
             let notes = try #require(summary.uncommitted.files.first(where: { $0.path == "notes.txt" }))
             #expect(notes.badges == ["Untracked"])
+
+            let rawDiff = try await service.fetchFileDiffRaw(
+                for: context,
+                file: TerminalRepositoryChangeFile(
+                    id: notes.id,
+                    path: notes.path,
+                    additions: notes.additions,
+                    deletions: notes.deletions,
+                    isBinary: notes.isBinary,
+                    badges: notes.badges,
+                    sectionTitle: "Uncommitted"
+                ),
+                preferredBaseBranch: nil
+            )
+            #expect(rawDiff.contains("diff --git a/notes.txt b/notes.txt"))
+            #expect(rawDiff.contains("new file mode 100644"))
+            #expect(rawDiff.contains("--- /dev/null"))
+            #expect(rawDiff.contains("+++ b/notes.txt"))
+            #expect(rawDiff.contains("@@ -0,0 +1"))
+            #expect(rawDiff.contains("+untracked"))
+        }
+    }
+
+    @Test
+    func fetchFileDiffRawForEmptyUntrackedFileHasNoAddedContentLines() async throws {
+        try await withTemporaryDirectory { temporaryRoot in
+            let repository = temporaryRoot.appendingPathComponent("changes-empty-untracked", isDirectory: true)
+            try await createRepository(at: repository)
+
+            let emptyURL = repository.appendingPathComponent("empty.txt")
+            try "".write(to: emptyURL, atomically: true, encoding: .utf8)
+
+            let service = TerminalRepositoryService(
+                workspaceRoot: temporaryRoot.appendingPathComponent("workspace", isDirectory: true)
+            )
+            let context = try await service.resolveContext(for: repository.path)
+            let summary = try await service.fetchRepositoryChanges(for: context, preferredBaseBranch: nil)
+            let empty = try #require(summary.uncommitted.files.first(where: { $0.path == "empty.txt" }))
+
+            let rawDiff = try await service.fetchFileDiffRaw(
+                for: context,
+                file: TerminalRepositoryChangeFile(
+                    id: empty.id,
+                    path: empty.path,
+                    additions: empty.additions,
+                    deletions: empty.deletions,
+                    isBinary: empty.isBinary,
+                    badges: empty.badges,
+                    sectionTitle: "Uncommitted"
+                ),
+                preferredBaseBranch: nil
+            )
+            #expect(rawDiff.contains("diff --git a/empty.txt b/empty.txt"))
+            #expect(rawDiff.contains("new file mode 100644"))
+            let hasAddedContentLines = rawDiff
+                .split(whereSeparator: \.isNewline)
+                .contains { line in
+                    line.hasPrefix("+") && !line.hasPrefix("+++")
+                }
+            #expect(hasAddedContentLines == false)
         }
     }
 
