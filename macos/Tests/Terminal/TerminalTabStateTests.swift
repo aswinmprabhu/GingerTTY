@@ -189,6 +189,63 @@ struct TerminalTabStateTests {
         #expect(tab.viewerSaveError == nil)
         #expect(tab.isViewerDirty == false)
     }
+
+    @Test
+    func closeDiffClearsDiffStateAndReturnsToTerminal() {
+        let tab = TerminalTabState()
+        let file = TerminalRepositoryChangeFile(
+            id: "file-1",
+            path: "Sources/App.swift",
+            additions: 3,
+            deletions: 1,
+            isBinary: false,
+            badges: [],
+            sectionTitle: "Uncommitted"
+        )
+
+        tab.openDiffForFile(file)
+        tab.setDiffRawText("diff --git a/Sources/App.swift b/Sources/App.swift", fileContent: "print(\"old\")")
+        tab.showCommentBox = true
+        tab.pendingSelectionStart = 10
+        tab.pendingSelectionEnd = 12
+        tab.pendingSelectionSide = "RIGHT"
+        tab.pendingCommentText = "Needs work"
+        tab.activeReviewThread = makeThread(
+            id: "thread-1",
+            isResolved: false,
+            comments: [makeComment(id: "comment-1", body: "Original comment", createdAt: 1)]
+        )
+
+        tab.closeDiff()
+
+        #expect(tab.selectedDiffFile == nil)
+        #expect(tab.diffRawText == nil)
+        #expect(tab.diffFileContent == nil)
+        #expect(tab.isDiffLoading == false)
+        #expect(tab.showCommentBox == false)
+        #expect(tab.pendingSelectionStart == nil)
+        #expect(tab.pendingSelectionEnd == nil)
+        #expect(tab.pendingSelectionSide == nil)
+        #expect(tab.pendingCommentText.isEmpty)
+        #expect(tab.activeReviewThread == nil)
+        #expect(tab.viewerFilePath == nil)
+        #expect(tab.combinedDiffTitle == nil)
+    }
+
+    @Test
+    func closeCombinedDiffClearsCombinedDiffStateAndReturnsToTerminal() {
+        let tab = TerminalTabState()
+
+        tab.openCombinedDiff(title: "All Changes")
+        tab.setCombinedDiffText("diff --git a/Sources/App.swift b/Sources/App.swift")
+        tab.closeCombinedDiff()
+
+        #expect(tab.combinedDiffTitle == nil)
+        #expect(tab.combinedDiffRawText == nil)
+        #expect(tab.isCombinedDiffLoading == false)
+        #expect(tab.selectedDiffFile == nil)
+        #expect(tab.viewerFilePath == nil)
+    }
 }
 
 private func makeThread(
