@@ -1492,16 +1492,19 @@ actor TerminalRepositoryService {
             }
         } else {
             if isUntracked {
-                let fullPath = (repositoryRoot as NSString).appendingPathComponent(file.path)
-                do {
-                    let content = try String(contentsOfFile: fullPath, encoding: .utf8)
-                    return Self.untrackedFileUnifiedDiff(path: file.path, content: content)
-                } catch {
-                    return try await git(
-                        ["-C", repositoryRoot, "diff", "--no-index", "--", "/dev/null", file.path],
-                        acceptedExitCodes: [0, 1]
-                    ).stdout
+                let repositoryRootURL = URL(fileURLWithPath: repositoryRoot).standardizedFileURL.resolvingSymlinksInPath()
+                let fileURL = repositoryRootURL
+                    .appendingPathComponent(file.path)
+                    .standardizedFileURL
+                    .resolvingSymlinksInPath()
+                guard Self.isPathInsideRepository(fileURL: fileURL, repositoryRootURL: repositoryRootURL) else {
+                    throw TerminalRepositoryServiceError.invalidResponse("Invalid repository-relative path.")
                 }
+
+                return try await git(
+                    ["-C", repositoryRoot, "diff", "--no-index", "--", "/dev/null", file.path],
+                    acceptedExitCodes: [0, 1]
+                ).stdout
             }
             return try await git(
                 ["-C", repositoryRoot, "diff", "-U3", "HEAD", "--", file.path],
@@ -1510,27 +1513,11 @@ actor TerminalRepositoryService {
         }
     }
 
-    static func untrackedFileUnifiedDiff(path: String, content: String) -> String {
-        var lines = content.isEmpty ? [] : content.components(separatedBy: "\n")
-        if content.hasSuffix("\n") {
-            lines.removeLast()
-        }
-
-        var diff = """
-        diff --git a/\(path) b/\(path)
-        new file mode 100644
-        --- /dev/null
-        +++ b/\(path)
-
-        """
-
-        guard !lines.isEmpty else { return diff }
-
-        diff += "@@ -0,0 +1,\(lines.count) @@\n"
-        for line in lines {
-            diff += "+\(line)\n"
-        }
-        return diff
+    private static func isPathInsideRepository(fileURL: URL, repositoryRootURL: URL) -> Bool {
+        let repositoryComponents = repositoryRootURL.pathComponents
+        let fileComponents = fileURL.pathComponents
+        guard fileComponents.count > repositoryComponents.count else { return false }
+        return Array(fileComponents.prefix(repositoryComponents.count)) == repositoryComponents
     }
 
     func fetchFileDiff(

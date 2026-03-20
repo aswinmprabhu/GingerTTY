@@ -251,13 +251,13 @@ struct TerminalSidebarDataTests {
             #expect(rawDiff.contains("new file mode 100644"))
             #expect(rawDiff.contains("--- /dev/null"))
             #expect(rawDiff.contains("+++ b/notes.txt"))
-            #expect(rawDiff.contains("@@ -0,0 +1,1 @@"))
+            #expect(rawDiff.contains("@@ -0,0 +1"))
             #expect(rawDiff.contains("+untracked"))
         }
     }
 
     @Test
-    func fetchFileDiffRawForEmptyUntrackedFileOmitsHunkBody() async throws {
+    func fetchFileDiffRawForEmptyUntrackedFileHasNoAddedContentLines() async throws {
         try await withTemporaryDirectory { temporaryRoot in
             let repository = temporaryRoot.appendingPathComponent("changes-empty-untracked", isDirectory: true)
             try await createRepository(at: repository)
@@ -287,9 +287,12 @@ struct TerminalSidebarDataTests {
             )
             #expect(rawDiff.contains("diff --git a/empty.txt b/empty.txt"))
             #expect(rawDiff.contains("new file mode 100644"))
-            #expect(rawDiff.contains("--- /dev/null"))
-            #expect(rawDiff.contains("+++ b/empty.txt"))
-            #expect(!rawDiff.contains("@@ -0,0 +1,"))
+            let hasAddedContentLines = rawDiff
+                .split(whereSeparator: \.isNewline)
+                .contains { line in
+                    line.hasPrefix("+") && !line.hasPrefix("+++")
+                }
+            #expect(hasAddedContentLines == false)
         }
     }
 
