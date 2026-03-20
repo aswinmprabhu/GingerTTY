@@ -313,6 +313,9 @@ struct TerminalDiffView: View {
                 .keyboardShortcut("f", modifiers: .command)
                 .hidden()
         }
+        .onExitCommand {
+            controller.closeDiff()
+        }
     }
 
     private var diffHeader: some View {
@@ -1584,6 +1587,9 @@ struct TerminalFileViewerView: View {
                 .keyboardShortcut("s", modifiers: .command)
                 .hidden()
         }
+        .onExitCommand {
+            controller.closeFileViewer()
+        }
     }
 
     private var fileViewerHeader: some View {
@@ -1817,6 +1823,9 @@ struct TerminalCombinedDiffView: View {
             Button("") { findModel.show() }
                 .keyboardShortcut("f", modifiers: .command)
                 .hidden()
+        }
+        .onExitCommand {
+            controller.closeCombinedDiff()
         }
     }
 
