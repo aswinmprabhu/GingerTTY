@@ -1462,6 +1462,7 @@ actor TerminalRepositoryService {
     ) async throws -> String {
         let repositoryRoot = context.repositoryRoot
         let isCommitted = file.sectionTitle == "Committed"
+        let isUntracked = file.badges.contains("Untracked")
 
         if isCommitted {
             await refreshPreferredBaseBranchIfNeeded(
@@ -1490,11 +1491,46 @@ actor TerminalRepositoryService {
                 return ""
             }
         } else {
+            if isUntracked {
+                let fullPath = (repositoryRoot as NSString).appendingPathComponent(file.path)
+                do {
+                    let content = try String(contentsOfFile: fullPath, encoding: .utf8)
+                    return Self.untrackedFileUnifiedDiff(path: file.path, content: content)
+                } catch {
+                    return try await git(
+                        ["-C", repositoryRoot, "diff", "--no-index", "--", "/dev/null", file.path],
+                        acceptedExitCodes: [0, 1]
+                    ).stdout
+                }
+            }
             return try await git(
                 ["-C", repositoryRoot, "diff", "-U3", "HEAD", "--", file.path],
                 acceptedExitCodes: [0, 1]
             ).stdout
         }
+    }
+
+    static func untrackedFileUnifiedDiff(path: String, content: String) -> String {
+        var lines = content.isEmpty ? [] : content.components(separatedBy: "\n")
+        if content.hasSuffix("\n") {
+            lines.removeLast()
+        }
+
+        var diff = """
+        diff --git a/\(path) b/\(path)
+        new file mode 100644
+        --- /dev/null
+        +++ b/\(path)
+
+        """
+
+        guard !lines.isEmpty else { return diff }
+
+        diff += "@@ -0,0 +1,\(lines.count) @@\n"
+        for line in lines {
+            diff += "+\(line)\n"
+        }
+        return diff
     }
 
     func fetchFileDiff(

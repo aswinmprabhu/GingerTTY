@@ -483,7 +483,6 @@ struct TerminalDiffView: View {
     private var emptyMessage: String {
         if let file = tab.selectedDiffFile {
             if file.isBinary { return "Binary file — no diff available." }
-            if file.badges.contains("Untracked") { return "New untracked file — no diff available." }
         }
         return "No diff content available."
     }
