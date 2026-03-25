@@ -676,15 +676,53 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     func openFileViewer(relativePath: String) {
         guard let root = tabState.repositoryRoot else { return }
         let fullPath = (root as NSString).appendingPathComponent(relativePath)
-        tabState.openFileViewer(path: relativePath)
+        openViewer(displayPath: relativePath, resolvedPath: fullPath)
+    }
 
+    func openPlanReview(
+        scratchFilePath: String,
+        responseFilePath: String,
+        sessionID: String,
+        agentID: String,
+        terminalID: String
+    ) {
+        let originalContent: String
+        do {
+            originalContent = try String(contentsOfFile: scratchFilePath, encoding: .utf8)
+        } catch {
+            tabState.setViewerFileLoadError(error.localizedDescription)
+            return
+        }
+
+        let session = TerminalPlanReviewSession(
+            terminalID: terminalID,
+            sessionID: sessionID,
+            agentID: agentID,
+            scratchFilePath: scratchFilePath,
+            responseFilePath: responseFilePath,
+            originalContent: originalContent
+        )
+
+        tabState.openPlanReview(session)
+        loadViewerFile(at: scratchFilePath)
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func openViewer(displayPath: String, resolvedPath: String) {
+        tabState.openFileViewer(path: displayPath, resolvedPath: resolvedPath)
+        loadViewerFile(at: resolvedPath)
+    }
+
+    private func loadViewerFile(at path: String) {
         fileLoadTask?.cancel()
         fileSaveTask?.cancel()
+
         fileLoadTask = Task { [weak self] in
             guard let self else { return }
             let tab = self.tabState
             do {
-                let content = try String(contentsOfFile: fullPath, encoding: .utf8)
+                let content = try String(contentsOfFile: path, encoding: .utf8)
                 guard !Task.isCancelled else { return }
                 await MainActor.run { tab.setViewerLoadedContent(content) }
             } catch {
@@ -704,25 +742,26 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             tabState.setViewerDraftContent(contentOverride)
         }
 
-        guard let root = tabState.repositoryRoot,
-              let relativePath = tabState.viewerFilePath,
+        guard let resolvedPath = tabState.viewerResolvedFilePath,
               let content = tabState.viewerFileContent,
               tabState.canSaveViewerFile else {
             return
         }
 
-        let fullPath = (root as NSString).appendingPathComponent(relativePath)
         tabState.beginViewerSave()
 
         fileSaveTask?.cancel()
         fileSaveTask = Task { [weak self] in
             guard let self else { return }
             do {
-                try content.write(toFile: fullPath, atomically: true, encoding: .utf8)
+                try content.write(toFile: resolvedPath, atomically: true, encoding: .utf8)
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
                     self.tabState.completeViewerSave(with: content)
-                    self.refreshLocalRepository()
+                    if let repositoryRoot = self.tabState.repositoryRoot,
+                       resolvedPath.hasPrefix(repositoryRoot + "/") || resolvedPath == repositoryRoot {
+                        self.refreshLocalRepository()
+                    }
                 }
             } catch {
                 guard !Task.isCancelled else { return }
@@ -742,6 +781,94 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         fileLoadTask?.cancel()
         fileSaveTask?.cancel()
         tabState.closeFileViewer()
+    }
+
+    func approvePlanReview() {
+        finalizePlanReview(decision: .approve)
+    }
+
+    func requestPlanReviewChanges() {
+        guard tabState.canRequestPlanReviewChanges else { return }
+        finalizePlanReview(decision: .requestChanges)
+    }
+
+    private func finalizePlanReview(decision: TerminalPlanReviewDecision) {
+        guard let session = tabState.planReviewSession else { return }
+        let comments = tabState.planReviewComments
+        let edited = tabState.isViewerDirty
+
+        tabState.beginPlanReviewSubmission()
+
+        Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                let finalFilePath = try await self.persistCurrentViewerContentIfNeeded()
+                let response = TerminalPlanReviewResponse(
+                    decision: decision,
+                    comments: comments.map {
+                        TerminalPlanReviewResponseComment(
+                            startLine: $0.startLine,
+                            endLine: $0.endLine,
+                            text: $0.text
+                        )
+                    },
+                    finalFilePath: finalFilePath,
+                    edited: edited
+                )
+
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
+                let data = try encoder.encode(response)
+                try data.write(to: URL(fileURLWithPath: session.responseFilePath), options: .atomic)
+
+                await MainActor.run {
+                    self.tabState.completePlanReviewSubmission()
+                    self.tabState.closeFileViewer()
+                    self.tabState.cancelPlanReviewSelection()
+                }
+            } catch {
+                await MainActor.run {
+                    self.tabState.setViewerSaveError(error.localizedDescription)
+                    self.tabState.failPlanReviewSubmission()
+                }
+            }
+        }
+    }
+
+    private func persistCurrentViewerContentIfNeeded() async throws -> String {
+        guard let resolvedPath = tabState.viewerResolvedFilePath else {
+            throw NSError(domain: "GingerTTY.PlanReview", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "No viewer file is open."
+            ])
+        }
+
+        guard tabState.isViewerDirty else {
+            return resolvedPath
+        }
+
+        guard let content = tabState.viewerFileContent else {
+            throw NSError(domain: "GingerTTY.PlanReview", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "No viewer content is available."
+            ])
+        }
+
+        await MainActor.run {
+            self.tabState.beginViewerSave()
+        }
+
+        do {
+            try content.write(toFile: resolvedPath, atomically: true, encoding: .utf8)
+            await MainActor.run {
+                self.tabState.completeViewerSave(with: content)
+            }
+            return resolvedPath
+        } catch {
+            await MainActor.run {
+                self.tabState.setViewerSaveError(error.localizedDescription)
+            }
+            throw error
+        }
     }
 
     private var combinedDiffLoadTask: Task<Void, Never>?

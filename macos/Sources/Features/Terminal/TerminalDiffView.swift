@@ -1565,11 +1565,8 @@ struct TerminalFileViewerView: View {
     }
 
     private var viewerDocumentURL: URL? {
-        guard let root = tab.repositoryRoot,
-              let relativePath = tab.viewerFilePath else {
-            return nil
-        }
-        return URL(fileURLWithPath: root).appendingPathComponent(relativePath)
+        guard let resolvedPath = tab.viewerResolvedFilePath else { return nil }
+        return URL(fileURLWithPath: resolvedPath)
     }
 
     var body: some View {
@@ -1578,6 +1575,21 @@ struct TerminalFileViewerView: View {
             Divider()
             fileViewerContent
         }
+        .overlay(alignment: .bottom) {
+            if tab.isPlanReviewActive && tab.showCommentBox {
+                InlineCommentBox(
+                    text: Binding(
+                        get: { tab.pendingCommentText },
+                        set: { tab.pendingCommentText = $0 }
+                    ),
+                    selectedRange: fileViewerCommentRangeLabel,
+                    onAdd: { addPlanReviewComment() },
+                    onCancel: { cancelPlanReviewComment() }
+                )
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: tab.showCommentBox)
         .background {
             Button("") { editorModel.showFind() }
                 .keyboardShortcut("f", modifiers: .command)
@@ -1628,6 +1640,27 @@ struct TerminalFileViewerView: View {
                     .foregroundStyle(.red)
                     .lineLimit(1)
                     .frame(maxWidth: 320, alignment: .trailing)
+            }
+
+            if tab.isPlanReviewActive {
+                if !tab.planReviewComments.isEmpty {
+                    Text("\(tab.planReviewComments.count) comment(s)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Button("Request Changes") {
+                    controller.requestPlanReviewChanges()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.orange)
+                .disabled(!tab.canRequestPlanReviewChanges)
+
+                Button("Approve") {
+                    controller.approvePlanReview()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!tab.canApprovePlanReview)
             }
 
             Button("Revert") {
@@ -1713,7 +1746,17 @@ struct TerminalFileViewerView: View {
             },
             onSaveRequested: { content in
                 controller.saveViewerFile(contentOverride: content)
-            }
+            },
+            onLinesSelected: tab.isPlanReviewActive ? { startLine, endLine in
+                guard let startLine, let endLine else {
+                    return
+                }
+                tab.pendingSelectionStart = startLine
+                tab.pendingSelectionEnd = endLine
+                tab.pendingSelectionSide = "new"
+                tab.showCommentBox = true
+                controller.objectWillChange.send()
+            } : nil
         )
     }
 
@@ -1751,6 +1794,35 @@ struct TerminalFileViewerView: View {
         let previewWidth = min(max(markdownPreviewWidth, markdownPreviewMinWidth), previewMaxWidth)
         let editorWidth = max(markdownEditorMinWidth, availableWidth - previewWidth - fileViewerDividerWidth)
         return (editorWidth, previewWidth, previewMaxWidth)
+    }
+
+    private var fileViewerCommentRangeLabel: String {
+        guard let start = tab.pendingSelectionStart else { return "" }
+        let end = tab.pendingSelectionEnd ?? start
+        if start == end {
+            return "Line \(start)"
+        }
+        return "Lines \(start)–\(end)"
+    }
+
+    private func addPlanReviewComment() {
+        let text = tab.pendingCommentText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty,
+              let start = tab.pendingSelectionStart else { return }
+
+        tab.addPlanReviewComment(
+            TerminalPlanReviewComment(
+                startLine: start,
+                endLine: tab.pendingSelectionEnd ?? start,
+                text: text
+            )
+        )
+        cancelPlanReviewComment()
+    }
+
+    private func cancelPlanReviewComment() {
+        tab.cancelPlanReviewSelection()
+        controller.objectWillChange.send()
     }
 }
 

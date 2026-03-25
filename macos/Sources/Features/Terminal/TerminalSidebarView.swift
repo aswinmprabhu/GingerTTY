@@ -409,6 +409,10 @@ private struct ChangesInspectorView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            if tab.isPlanReviewActive {
+                PlanReviewCard(controller: controller, tab: tab)
+            }
+
             if tab.isReviewMode {
                 ReviewSubmissionCard(controller: controller, tab: tab)
             }
@@ -1136,6 +1140,90 @@ private struct ReviewCommentsPreview: View {
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(Color(nsColor: .textBackgroundColor))
                 )
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+    }
+}
+
+private struct PlanReviewCard: View {
+    @ObservedObject var controller: TerminalController
+    @ObservedObject var tab: TerminalTabState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Plan Review")
+                    .font(.headline)
+
+                Spacer()
+
+                if let session = tab.planReviewSession {
+                    Text(session.agentID)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Text("Reviewing a Claude plan in markdown. You can comment on selected lines or edit the plan directly before approving.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if tab.planReviewComments.isEmpty {
+                Text(tab.isViewerDirty ? "No line comments yet. Direct markdown edits will still be included with Request Changes." : "No plan review comments yet.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(tab.planReviewComments) { comment in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(comment.startLine == comment.endLine ? "L\(comment.startLine)" : "L\(comment.startLine)-L\(comment.endLine)")
+                                .font(.caption.monospaced().weight(.semibold))
+                                .foregroundStyle(.secondary)
+
+                            Spacer()
+
+                            Button {
+                                tab.removePlanReviewComment(id: comment.id)
+                            } label: {
+                                Image(systemName: "trash")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.red)
+                        }
+
+                        Text(comment.text)
+                            .font(.caption)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color(nsColor: .textBackgroundColor))
+                    )
+                }
+            }
+
+            HStack {
+                Button("Request Changes") {
+                    controller.requestPlanReviewChanges()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.orange)
+                .disabled(!tab.canRequestPlanReviewChanges)
+
+                Button("Approve") {
+                    controller.approvePlanReview()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!tab.canApprovePlanReview)
             }
         }
         .padding(12)

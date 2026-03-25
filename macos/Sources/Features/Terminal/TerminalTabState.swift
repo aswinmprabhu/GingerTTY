@@ -89,6 +89,12 @@ final class TerminalTabState: ObservableObject, Identifiable {
     @Published var isSubmittingReview: Bool = false
     @Published var reviewSubmitError: String?
 
+    // MARK: Plan review state
+
+    @Published private(set) var planReviewSession: TerminalPlanReviewSession?
+    @Published var planReviewComments: [TerminalPlanReviewComment] = []
+    @Published private(set) var isPlanReviewSubmitting: Bool = false
+
     // MARK: Agent status (set via AppleScript by CLI wrappers)
 
     @Published private(set) var agentStatus: String?
@@ -109,6 +115,7 @@ final class TerminalTabState: ObservableObject, Identifiable {
     // MARK: File viewer state
 
     @Published var viewerFilePath: String?
+    @Published private(set) var viewerResolvedFilePath: String?
     @Published private(set) var viewerLayoutMode: TerminalFileViewerLayoutMode = .editorOnly
     @Published var viewerOriginalContent: String?
     @Published var viewerFileContent: String?
@@ -137,6 +144,25 @@ final class TerminalTabState: ObservableObject, Identifiable {
             isViewerDirty &&
             !isViewerLoading &&
             !isViewerSaving
+    }
+
+    var isPlanReviewActive: Bool {
+        planReviewSession != nil
+    }
+
+    var canRequestPlanReviewChanges: Bool {
+        planReviewSession != nil &&
+            !isViewerLoading &&
+            !isViewerSaving &&
+            !isPlanReviewSubmitting &&
+            (!planReviewComments.isEmpty || isViewerDirty)
+    }
+
+    var canApprovePlanReview: Bool {
+        planReviewSession != nil &&
+            !isViewerLoading &&
+            !isViewerSaving &&
+            !isPlanReviewSubmitting
     }
 
     // MARK: Init
@@ -185,6 +211,9 @@ final class TerminalTabState: ObservableObject, Identifiable {
         reviewSubmitError = nil
         mergeInProgress = false
         mergeError = nil
+        planReviewSession = nil
+        planReviewComments = []
+        isPlanReviewSubmitting = false
         showCommentBox = false
         pendingSelectionStart = nil
         pendingSelectionEnd = nil
@@ -317,6 +346,7 @@ final class TerminalTabState: ObservableObject, Identifiable {
         combinedDiffRawText = nil
         isCombinedDiffLoading = false
         viewerFilePath = nil
+        viewerResolvedFilePath = nil
         viewerLayoutMode = .editorOnly
         viewerOriginalContent = nil
         viewerFileContent = nil
@@ -353,8 +383,9 @@ final class TerminalTabState: ObservableObject, Identifiable {
 
     // MARK: File viewer
 
-    func openFileViewer(path: String) {
+    func openFileViewer(path: String, resolvedPath: String? = nil) {
         viewerFilePath = path
+        viewerResolvedFilePath = resolvedPath ?? path
         viewerLayoutMode = .forFilePath(path)
         viewerOriginalContent = nil
         viewerFileContent = nil
@@ -362,7 +393,7 @@ final class TerminalTabState: ObservableObject, Identifiable {
         isViewerSaving = false
         viewerLoadError = nil
         viewerSaveError = nil
-        highlightedFilePath = path
+        highlightedFilePath = resolvedPath == nil ? path : nil
         rightSidebarSelection = .files
         if isRightSidebarCollapsed {
             isRightSidebarCollapsed = false
@@ -423,6 +454,7 @@ final class TerminalTabState: ObservableObject, Identifiable {
 
     func closeFileViewer() {
         viewerFilePath = nil
+        viewerResolvedFilePath = nil
         viewerLayoutMode = .editorOnly
         viewerOriginalContent = nil
         viewerFileContent = nil
@@ -443,6 +475,7 @@ final class TerminalTabState: ObservableObject, Identifiable {
         diffFileContent = nil
         isDiffLoading = false
         viewerFilePath = nil
+        viewerResolvedFilePath = nil
         viewerLayoutMode = .editorOnly
         viewerOriginalContent = nil
         viewerFileContent = nil
@@ -555,5 +588,49 @@ final class TerminalTabState: ObservableObject, Identifiable {
         )
 
         replaceReviewThread(updatedThread)
+    }
+
+    // MARK: Plan review
+
+    func openPlanReview(_ session: TerminalPlanReviewSession) {
+        planReviewSession = session
+        planReviewComments = []
+        isPlanReviewSubmitting = false
+        openFileViewer(path: session.scratchFilePath, resolvedPath: session.scratchFilePath)
+        rightSidebarSelection = .changes
+    }
+
+    func addPlanReviewComment(_ comment: TerminalPlanReviewComment) {
+        planReviewComments.append(comment)
+    }
+
+    func removePlanReviewComment(id: UUID) {
+        planReviewComments.removeAll { $0.id == id }
+    }
+
+    func clearPlanReviewComments() {
+        planReviewComments.removeAll()
+    }
+
+    func beginPlanReviewSubmission() {
+        isPlanReviewSubmitting = true
+    }
+
+    func completePlanReviewSubmission() {
+        isPlanReviewSubmitting = false
+        planReviewSession = nil
+        planReviewComments = []
+    }
+
+    func failPlanReviewSubmission() {
+        isPlanReviewSubmitting = false
+    }
+
+    func cancelPlanReviewSelection() {
+        pendingCommentText = ""
+        pendingSelectionStart = nil
+        pendingSelectionEnd = nil
+        pendingSelectionSide = nil
+        showCommentBox = false
     }
 }

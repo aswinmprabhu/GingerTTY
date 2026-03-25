@@ -58,8 +58,9 @@ HOOK_SCRIPT="${GINGERTTY_BIN_DIR}/gingertty-hook.sh"
 # - UserPromptSubmit: clears "Need input", sets "Running"
 # - Stop/Notification: sets "Need input"
 # - PreToolUse: async, keeps "Running" status (clears "Need input" after permission grant)
+# - PermissionRequest (ExitPlanMode): triggers plan review UI when Claude requests plan approval
 # - SessionEnd: clears status when Claude exits
-HOOKS_JSON="{\"hooks\":{\"UserPromptSubmit\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${HOOK_SCRIPT} UserPromptSubmit\",\"timeout\":10}]}],\"Stop\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${HOOK_SCRIPT} Stop\",\"timeout\":5,\"async\":true}]}],\"Notification\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${HOOK_SCRIPT} Notification\",\"timeout\":5,\"async\":true}]}],\"PreToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${HOOK_SCRIPT} PreToolUse\",\"timeout\":5,\"async\":true}]}],\"SessionEnd\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${HOOK_SCRIPT} SessionEnd\",\"timeout\":1}]}]}}"
+HOOKS_JSON="{\"hooks\":{\"UserPromptSubmit\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${HOOK_SCRIPT} UserPromptSubmit\",\"timeout\":10}]}],\"Stop\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${HOOK_SCRIPT} Stop\",\"timeout\":5,\"async\":true}]}],\"Notification\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${HOOK_SCRIPT} Notification\",\"timeout\":5,\"async\":true}]}],\"PreToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${HOOK_SCRIPT} PreToolUse\",\"timeout\":5,\"async\":true}]}],\"PermissionRequest\":[{\"matcher\":\"ExitPlanMode\",\"hooks\":[{\"type\":\"command\",\"command\":\"${HOOK_SCRIPT} ExitPlanMode\",\"timeout\":905}]}],\"SessionEnd\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${HOOK_SCRIPT} SessionEnd\",\"timeout\":1}]}]}}"
 
 if [[ "$SKIP_SESSION_ID" == true ]]; then
     exec "$REAL_CLAUDE" --settings "$HOOKS_JSON" "$@"

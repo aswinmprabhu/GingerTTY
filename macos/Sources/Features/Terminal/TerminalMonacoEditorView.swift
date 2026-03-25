@@ -902,11 +902,13 @@ struct MonacoEditorWebView: NSViewRepresentable {
     var editorModel: MonacoEditorModel? = nil
     let onContentChanged: (String) -> Void
     let onSaveRequested: (String?) -> Void
+    var onLinesSelected: ((Int?, Int?) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             onContentChanged: onContentChanged,
-            onSaveRequested: onSaveRequested
+            onSaveRequested: onSaveRequested,
+            onLinesSelected: onLinesSelected
         )
     }
 
@@ -916,6 +918,7 @@ struct MonacoEditorWebView: NSViewRepresentable {
         contentController.add(context.coordinator, name: "editorReady")
         contentController.add(context.coordinator, name: "contentChanged")
         contentController.add(context.coordinator, name: "saveRequested")
+        contentController.add(context.coordinator, name: "linesSelected")
         config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
 
         let webView = WKWebView(frame: .zero, configuration: config)
@@ -1175,6 +1178,21 @@ struct MonacoEditorWebView: NSViewRepresentable {
                 changeTimer = window.setTimeout(postContentChange, 40);
             });
 
+            editor.onDidChangeCursorSelection((event) => {
+                const selection = event.selection;
+                if (!selection || selection.isEmpty()) {
+                    window.webkit.messageHandlers.linesSelected.postMessage({});
+                    return;
+                }
+
+                const startLine = Math.min(selection.startLineNumber, selection.endLineNumber);
+                const endLine = Math.max(selection.startLineNumber, selection.endLineNumber);
+                window.webkit.messageHandlers.linesSelected.postMessage({
+                    startLine,
+                    endLine,
+                });
+            });
+
             editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
                 const currentContent = editor.getValue();
                 window.webkit.messageHandlers.saveRequested.postMessage({ content: currentContent });
@@ -1215,6 +1233,7 @@ struct MonacoEditorWebView: NSViewRepresentable {
     final class Coordinator: NSObject, WKScriptMessageHandler {
         let onContentChanged: (String) -> Void
         let onSaveRequested: (String?) -> Void
+        let onLinesSelected: ((Int?, Int?) -> Void)?
 
         weak var webView: WKWebView?
         var lastFilePath: String = ""
@@ -1224,10 +1243,12 @@ struct MonacoEditorWebView: NSViewRepresentable {
 
         init(
             onContentChanged: @escaping (String) -> Void,
-            onSaveRequested: @escaping (String?) -> Void
+            onSaveRequested: @escaping (String?) -> Void,
+            onLinesSelected: ((Int?, Int?) -> Void)?
         ) {
             self.onContentChanged = onContentChanged
             self.onSaveRequested = onSaveRequested
+            self.onLinesSelected = onLinesSelected
         }
 
         func userContentController(
@@ -1254,6 +1275,13 @@ struct MonacoEditorWebView: NSViewRepresentable {
                         onContentChanged(content)
                     }
                     onSaveRequested(content)
+                }
+            case "linesSelected":
+                let payload = message.body as? [String: Any]
+                let startLine = payload?["startLine"] as? Int
+                let endLine = payload?["endLine"] as? Int
+                DispatchQueue.main.async { [onLinesSelected] in
+                    onLinesSelected?(startLine, endLine)
                 }
             default:
                 break

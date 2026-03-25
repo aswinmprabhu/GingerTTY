@@ -239,6 +239,60 @@ extension NSApplication {
         NotificationCenter.default.post(name: .gingerTTYTabGroupDidChange, object: controller.window)
     }
 
+    /// Handler for the `open plan review` AppleScript command.
+    ///
+    /// Required selector name from the command in `sdef`:
+    /// `handleOpenPlanReviewScriptCommand:`.
+    @objc(handleOpenPlanReviewScriptCommand:)
+    func handleOpenPlanReviewScriptCommand(_ command: NSScriptCommand) {
+        guard validateScript(command: command) else { return }
+
+        guard let scratchFilePath = command.directParameter as? String, !scratchFilePath.isEmpty else {
+            command.scriptErrorNumber = errAEParamMissed
+            command.scriptErrorString = "Missing scratch file path."
+            return
+        }
+
+        guard let responsePath = command.evaluatedArguments?["responsePath"] as? String, !responsePath.isEmpty else {
+            command.scriptErrorNumber = errAEParamMissed
+            command.scriptErrorString = "Missing response path."
+            return
+        }
+
+        guard let sessionID = command.evaluatedArguments?["sessionID"] as? String, !sessionID.isEmpty else {
+            command.scriptErrorNumber = errAEParamMissed
+            command.scriptErrorString = "Missing session ID."
+            return
+        }
+
+        guard let agentID = command.evaluatedArguments?["agentID"] as? String, !agentID.isEmpty else {
+            command.scriptErrorNumber = errAEParamMissed
+            command.scriptErrorString = "Missing agent ID."
+            return
+        }
+
+        guard let terminal = command.evaluatedArguments?["on"] as? ScriptTerminal else {
+            command.scriptErrorNumber = errAEParamMissed
+            command.scriptErrorString = "Missing terminal target."
+            return
+        }
+
+        guard let surfaceView = terminal.surfaceView,
+              let controller = surfaceView.window?.windowController as? TerminalController else {
+            command.scriptErrorNumber = errAEEventFailed
+            command.scriptErrorString = "Terminal controller is unavailable."
+            return
+        }
+
+        controller.openPlanReview(
+            scratchFilePath: scratchFilePath,
+            responseFilePath: responsePath,
+            sessionID: sessionID,
+            agentID: agentID,
+            terminalID: terminal.stableID
+        )
+    }
+
     /// Handler for the `new tab` AppleScript command.
     ///
     /// Required selector name from the command in `sdef`:

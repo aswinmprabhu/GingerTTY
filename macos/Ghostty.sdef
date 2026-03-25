@@ -28,6 +28,9 @@
       <responds-to command="set agent status">
         <cocoa method="handleSetAgentStatusScriptCommand:"/>
       </responds-to>
+      <responds-to command="open plan review">
+        <cocoa method="handleOpenPlanReviewScriptCommand:"/>
+      </responds-to>
 
       <element type="window" access="r">
         <cocoa key="scriptWindows"/>
@@ -215,6 +218,22 @@
 
     <command name="set agent status" code="GhstSASt" description="Set the agent status indicator on a terminal tab.">
       <direct-parameter type="text" description="The status text (empty string to clear)."/>
+      <parameter name="on" code="GonT" type="terminal" description="Target terminal.">
+        <cocoa key="on"/>
+      </parameter>
+    </command>
+
+    <command name="open plan review" code="GhstOPRv" description="Open a markdown plan review session for a terminal.">
+      <direct-parameter type="text" description="Absolute path to the scratch markdown file."/>
+      <parameter name="response path" code="GPrP" type="text" description="Absolute path where GingerTTY should write the review response.">
+        <cocoa key="responsePath"/>
+      </parameter>
+      <parameter name="session id" code="GPrS" type="text" description="Claude session identifier for the review.">
+        <cocoa key="sessionID"/>
+      </parameter>
+      <parameter name="agent id" code="GPrA" type="text" description="Claude agent identifier for the review.">
+        <cocoa key="agentID"/>
+      </parameter>
       <parameter name="on" code="GonT" type="terminal" description="Target terminal.">
         <cocoa key="on"/>
       </parameter>
