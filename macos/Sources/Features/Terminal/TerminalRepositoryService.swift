@@ -1462,6 +1462,7 @@ actor TerminalRepositoryService {
     ) async throws -> String {
         let repositoryRoot = context.repositoryRoot
         let isCommitted = file.sectionTitle == "Committed"
+        let isUntracked = file.badges.contains("Untracked")
 
         if isCommitted {
             await refreshPreferredBaseBranchIfNeeded(
@@ -1490,11 +1491,33 @@ actor TerminalRepositoryService {
                 return ""
             }
         } else {
+            if isUntracked {
+                let repositoryRootURL = URL(fileURLWithPath: repositoryRoot).standardizedFileURL.resolvingSymlinksInPath()
+                let fileURL = repositoryRootURL
+                    .appendingPathComponent(file.path)
+                    .standardizedFileURL
+                    .resolvingSymlinksInPath()
+                guard Self.isPathInsideRepository(fileURL: fileURL, repositoryRootURL: repositoryRootURL) else {
+                    throw TerminalRepositoryServiceError.invalidResponse("Invalid repository-relative path.")
+                }
+
+                return try await git(
+                    ["-C", repositoryRoot, "diff", "--no-index", "--", "/dev/null", file.path],
+                    acceptedExitCodes: [0, 1]
+                ).stdout
+            }
             return try await git(
                 ["-C", repositoryRoot, "diff", "-U3", "HEAD", "--", file.path],
                 acceptedExitCodes: [0, 1]
             ).stdout
         }
+    }
+
+    private static func isPathInsideRepository(fileURL: URL, repositoryRootURL: URL) -> Bool {
+        let repositoryComponents = repositoryRootURL.pathComponents
+        let fileComponents = fileURL.pathComponents
+        guard fileComponents.count > repositoryComponents.count else { return false }
+        return Array(fileComponents.prefix(repositoryComponents.count)) == repositoryComponents
     }
 
     func fetchFileDiff(
