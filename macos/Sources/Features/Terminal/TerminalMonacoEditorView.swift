@@ -62,6 +62,10 @@ private struct MonacoEmbeddedResources {
     Rebuild and reinstall GingerTTY so the bundled Monaco resources are copied into the app.
     """
 
+    static var markedURL: URL? {
+        Bundle.main.resourceURL?.appendingPathComponent("Marked/marked.min.js")
+    }
+
     static var resources: ResourceSet? {
         guard let baseURL = Bundle.main.resourceURL?.appendingPathComponent("Monaco", isDirectory: true),
               let workerPaths = resolveWorkerPaths(baseURL: baseURL) else {
@@ -291,9 +295,6 @@ struct MonacoMarkdownPreviewWebView: NSViewRepresentable {
         }
     }
 
-    // Monaco's public bundle exposes colorize() but not the internal markdown
-    // renderer, so the preview does a small local markdown-to-HTML pass and
-    // delegates fenced code highlighting back to Monaco.
     private static func buildHTML(
         content: String,
         theme: TerminalCodeTheme,
@@ -311,6 +312,12 @@ struct MonacoMarkdownPreviewWebView: NSViewRepresentable {
         let linkColor = theme.isDark ? "#58A6FF" : "#0969DA"
         let codeBackground = theme.isDark ? "#161B22" : "#F6F8FA"
         let borderColor = theme.isDark ? "#30363D" : "#D0D7DE"
+        let markedScriptTag: String
+        if let markedURL = MonacoEmbeddedResources.markedURL {
+            markedScriptTag = "<script src=\"\(MonacoEmbeddedResources.escapeJSString(markedURL.absoluteString))\"></script>"
+        } else {
+            markedScriptTag = ""
+        }
 
         return """
         <!DOCTYPE html>
@@ -428,11 +435,6 @@ struct MonacoMarkdownPreviewWebView: NSViewRepresentable {
                 border-radius: 0;
                 background: transparent;
             }
-            .code-loading {
-                padding: 12px;
-                color: var(--gg-muted);
-                font-size: 12px;
-            }
             table {
                 width: 100%;
                 border-collapse: collapse;
@@ -487,6 +489,7 @@ struct MonacoMarkdownPreviewWebView: NSViewRepresentable {
             }
         };
         </script>
+        \(markedScriptTag)
         <script src="\(loaderURL)"></script>
         <script>
         let markdownContent = `\(escapedContent)`;
@@ -499,6 +502,7 @@ struct MonacoMarkdownPreviewWebView: NSViewRepresentable {
         let isReady = false;
         let renderTimer = null;
         let renderVersion = 0;
+        let codeBlockQueue = [];
 
         function showError(message) {
             document.getElementById('preview').style.display = 'none';
@@ -530,226 +534,39 @@ struct MonacoMarkdownPreviewWebView: NSViewRepresentable {
             return trimmed;
         }
 
-        function restoreInlineTokens(text, tokens) {
-            return text.replace(/__GINGER_INLINE_(\\d+)__/g, (_, index) => tokens[Number(index)] ?? '');
-        }
+        function configureMarked() {
+            if (typeof marked === 'undefined') return;
 
-        function renderInline(text) {
-            const tokens = [];
-            const storeToken = (html) => `__GINGER_INLINE_${tokens.push(html) - 1}__`;
-            let working = text;
+            const renderer = new marked.Renderer();
 
-            working = working.replace(/`([^`]+)`/g, (_, code) => storeToken(`<code>${escapeHTML(code)}</code>`));
-            working = escapeHTML(working);
-
-            working = working.replace(/!\\[([^\\]]*)\\]\\(([^)]+)\\)/g, (_, alt, url) => {
-                const safeURL = sanitizeURL(url);
-                if (!safeURL) return alt;
-                return storeToken(`<img src="${escapeHTML(safeURL)}" alt="${escapeHTML(alt)}">`);
-            });
-
-            working = working.replace(/\\[([^\\]]+)\\]\\(([^)]+)\\)/g, (_, label, url) => {
-                const safeURL = sanitizeURL(url);
-                if (!safeURL) return label;
-                return storeToken(`<a href="${escapeHTML(safeURL)}">${renderInline(label)}</a>`);
-            });
-
-            working = working.replace(/\\*\\*([^*]+)\\*\\*/g, (_, body) => storeToken(`<strong>${renderInline(body)}</strong>`));
-            working = working.replace(/__([^_]+)__/g, (_, body) => storeToken(`<strong>${renderInline(body)}</strong>`));
-            working = working.replace(/~~([^~]+)~~/g, (_, body) => storeToken(`<del>${renderInline(body)}</del>`));
-            working = working.replace(/(^|[\\s(])\\*([^*]+)\\*(?=[\\s).,!?:;]|$)/g, (_, prefix, body) => `${prefix}${storeToken(`<em>${renderInline(body)}</em>`)}`);
-            working = working.replace(/(^|[\\s(])_([^_]+)_(?=[\\s).,!?:;]|$)/g, (_, prefix, body) => `${prefix}${storeToken(`<em>${renderInline(body)}</em>`)}`);
-
-            return restoreInlineTokens(working, tokens);
-        }
-
-        function isBlank(line) {
-            return line.trim().length === 0;
-        }
-
-        function isCodeToken(line) {
-            return /^@@CODEBLOCK:code-\\d+@@$/.test(line.trim());
-        }
-
-        function isHorizontalRule(line) {
-            return /^ {0,3}([-*_])(?:\\s*\\1){2,}\\s*$/.test(line);
-        }
-
-        function isHeading(line) {
-            return /^\\s*#{1,6}\\s+/.test(line);
-        }
-
-        function listMatch(line) {
-            return line.match(/^\\s*(?:[-*+]|\\d+\\.)\\s+(.*)$/);
-        }
-
-        function isTableSeparator(line) {
-            return /^\\s*\\|?(?:\\s*:?-+:?\\s*\\|)+\\s*:?-+:?\\s*\\|?\\s*$/.test(line);
-        }
-
-        function splitPipeRow(line) {
-            let trimmed = line.trim();
-            if (trimmed.startsWith('|')) trimmed = trimmed.slice(1);
-            if (trimmed.endsWith('|')) trimmed = trimmed.slice(0, -1);
-            return trimmed.split('|').map((cell) => cell.trim());
-        }
-
-        function startsNewBlock(lines, index) {
-            const line = lines[index];
-            return isCodeToken(line)
-                || isHorizontalRule(line)
-                || isHeading(line)
-                || /^\\s*>/.test(line)
-                || !!listMatch(line)
-                || (line.includes('|') && index + 1 < lines.length && isTableSeparator(lines[index + 1]));
-        }
-
-        function renderParagraph(lines) {
-            return `<p>${renderInline(lines.join('\\n').trim()).replace(/\\n/g, '<br>')}</p>`;
-        }
-
-        function renderTable(lines, start) {
-            const headers = splitPipeRow(lines[start]);
-            const separators = splitPipeRow(lines[start + 1]);
-            const alignments = separators.map((cell) => {
-                if (/^:\\s*-+\\s*:$/.test(cell)) return 'center';
-                if (/^-+\\s*:$/.test(cell)) return 'right';
-                if (/^:\\s*-+$/.test(cell)) return 'left';
-                return null;
-            });
-
-            let index = start + 2;
-            const rows = [];
-            while (index < lines.length && !isBlank(lines[index]) && lines[index].includes('|')) {
-                rows.push(splitPipeRow(lines[index]));
-                index += 1;
-            }
-
-            const headHTML = headers.map((cell, cellIndex) => {
-                const alignment = alignments[cellIndex] ? ` style="text-align:${alignments[cellIndex]}"` : '';
-                return `<th${alignment}>${renderInline(cell)}</th>`;
-            }).join('');
-            const bodyHTML = rows.map((row) => {
-                const cells = row.map((cell, cellIndex) => {
-                    const alignment = alignments[cellIndex] ? ` style="text-align:${alignments[cellIndex]}"` : '';
-                    return `<td${alignment}>${renderInline(cell)}</td>`;
-                }).join('');
-                return `<tr>${cells}</tr>`;
-            }).join('');
-
-            const html = `<table><thead><tr>${headHTML}</tr></thead>${bodyHTML ? `<tbody>${bodyHTML}</tbody>` : ''}</table>`;
-            return { html, nextIndex: index };
-        }
-
-        function renderList(lines, start) {
-            const ordered = /^\\s*\\d+\\./.test(lines[start]);
-            const tag = ordered ? 'ol' : 'ul';
-            const items = [];
-            let index = start;
-
-            while (index < lines.length) {
-                const match = listMatch(lines[index]);
-                if (!match) break;
-                items.push(`<li>${renderInline(match[1].trim())}</li>`);
-                index += 1;
-                if (index < lines.length && isBlank(lines[index])) break;
-            }
-
-            return { html: `<${tag}>${items.join('')}</${tag}>`, nextIndex: index };
-        }
-
-        function renderBlockquote(lines, start) {
-            const quoteLines = [];
-            let index = start;
-            while (index < lines.length && /^\\s*>/.test(lines[index])) {
-                quoteLines.push(lines[index].replace(/^\\s*>\\s?/, ''));
-                index += 1;
-            }
-            return { html: `<blockquote>${renderBlocks(quoteLines)}</blockquote>`, nextIndex: index };
-        }
-
-        function extractCodeBlocks(markdown) {
-            const codeBlocks = [];
-            const normalized = markdown.replace(/\\r\\n?/g, '\\n');
-            const text = normalized.replace(/(^|\\n)```([^\\n`]*)\\n([\\s\\S]*?)\\n```(?=\\n|$)/g, (match, prefix, language, code) => {
-                const id = `code-${codeBlocks.length}`;
-                codeBlocks.push({ id, language: language.trim(), code });
-                return `${prefix}@@CODEBLOCK:${id}@@`;
-            });
-            return { text, codeBlocks };
-        }
-
-        function renderBlocks(lines) {
-            const blocks = [];
-            let index = 0;
-
-            while (index < lines.length) {
-                const line = lines[index];
-                if (isBlank(line)) {
-                    index += 1;
-                    continue;
-                }
-
-                if (isCodeToken(line)) {
-                    const id = line.trim().replace('@@CODEBLOCK:', '').replace('@@', '');
-                    blocks.push(`<div class="code-shell"><div class="code-placeholder" data-code-id="${id}"><div class="code-loading">Rendering code block...</div></div></div>`);
-                    index += 1;
-                    continue;
-                }
-
-                const headingMatch = line.match(/^\\s*(#{1,6})\\s+(.*)$/);
-                if (headingMatch) {
-                    const level = headingMatch[1].length;
-                    blocks.push(`<h${level}>${renderInline(headingMatch[2].trim())}</h${level}>`);
-                    index += 1;
-                    continue;
-                }
-
-                if (isHorizontalRule(line)) {
-                    blocks.push('<hr>');
-                    index += 1;
-                    continue;
-                }
-
-                if (line.includes('|') && index + 1 < lines.length && isTableSeparator(lines[index + 1])) {
-                    const table = renderTable(lines, index);
-                    blocks.push(table.html);
-                    index = table.nextIndex;
-                    continue;
-                }
-
-                if (/^\\s*>/.test(line)) {
-                    const blockquote = renderBlockquote(lines, index);
-                    blocks.push(blockquote.html);
-                    index = blockquote.nextIndex;
-                    continue;
-                }
-
-                if (listMatch(line)) {
-                    const list = renderList(lines, index);
-                    blocks.push(list.html);
-                    index = list.nextIndex;
-                    continue;
-                }
-
-                const paragraphLines = [line];
-                index += 1;
-                while (index < lines.length && !isBlank(lines[index]) && !startsNewBlock(lines, index)) {
-                    paragraphLines.push(lines[index]);
-                    index += 1;
-                }
-                blocks.push(renderParagraph(paragraphLines));
-            }
-
-            return blocks.join('\\n');
-        }
-
-        function renderMarkdownToHTML(markdown) {
-            const extracted = extractCodeBlocks(markdown);
-            return {
-                html: renderBlocks(extracted.text.split('\\n')),
-                codeBlocks: extracted.codeBlocks,
+            renderer.code = function({ text, lang }) {
+                const language = (lang || '').split(/\\s/)[0] || 'plaintext';
+                const languageLabel = escapeHTML(language);
+                const blockId = 'code-' + codeBlockQueue.length;
+                codeBlockQueue.push({ id: blockId, language, code: text });
+                return '<div class="code-shell">'
+                    + '<div class="code-header">' + languageLabel + '</div>'
+                    + '<pre class="code-block" data-code-id="' + blockId + '"><code>'
+                    + escapeHTML(text) + '</code></pre></div>';
             };
+
+            renderer.link = function({ href, text }) {
+                const safeURL = sanitizeURL(href || '');
+                if (!safeURL) return text;
+                return '<a href="' + escapeHTML(safeURL) + '">' + text + '</a>';
+            };
+
+            renderer.image = function({ href, text }) {
+                const safeURL = sanitizeURL(href || '');
+                if (!safeURL) return text || '';
+                return '<img src="' + escapeHTML(safeURL) + '" alt="' + escapeHTML(text || '') + '">';
+            };
+
+            marked.setOptions({
+                renderer,
+                gfm: true,
+                breaks: false,
+            });
         }
 
         function applyTheme() {
@@ -779,25 +596,22 @@ struct MonacoMarkdownPreviewWebView: NSViewRepresentable {
             if (!isReady) return;
             const currentVersion = ++renderVersion;
             try {
-                const rendered = renderMarkdownToHTML(markdownContent);
+                codeBlockQueue = [];
+                const html = marked.parse(markdownContent);
                 const previewEl = document.getElementById('preview');
-                previewEl.innerHTML = rendered.html;
+                previewEl.innerHTML = html;
                 showPreview();
 
-                await Promise.all(rendered.codeBlocks.map(async (block) => {
-                    const target = previewEl.querySelector(`[data-code-id="${block.id}"]`);
+                const blocks = codeBlockQueue.slice();
+                await Promise.all(blocks.map(async (block) => {
+                    const target = previewEl.querySelector('[data-code-id="' + block.id + '"]');
                     if (!target) return;
-
-                    const language = block.language || 'plaintext';
-                    const languageLabel = escapeHTML(language || 'plain text');
-
                     try {
-                        const colored = await monaco.editor.colorize(block.code, language);
+                        const colored = await monaco.editor.colorize(block.code, block.language);
                         if (currentVersion !== renderVersion) return;
-                        target.innerHTML = `<div class="code-header">${languageLabel}</div><pre class="code-block"><code>${colored}</code></pre>`;
-                    } catch (error) {
-                        if (currentVersion !== renderVersion) return;
-                        target.innerHTML = `<div class="code-header">${languageLabel}</div><pre class="code-block"><code>${escapeHTML(block.code)}</code></pre>`;
+                        target.innerHTML = '<code>' + colored + '</code>';
+                    } catch (_) {
+                        // keep the escaped fallback already in the DOM
                     }
                 }));
             } catch (error) {
@@ -834,7 +648,10 @@ struct MonacoMarkdownPreviewWebView: NSViewRepresentable {
 
         if (typeof require === 'undefined') {
             showError('Failed to load Monaco loader from the app bundle.');
+        } else if (typeof marked === 'undefined') {
+            showError('Failed to load Marked library from the app bundle.');
         } else {
+            configureMarked();
             require.config({ paths: { vs: monacoBaseURL + 'vs' } });
             require(['vs/editor/editor.main'], function() {
                 isReady = true;

@@ -11,6 +11,7 @@
 		55154BE02B33911F001622DC /* ghostty in Resources */ = {isa = PBXBuildFile; fileRef = 55154BDF2B33911F001622DC /* ghostty */; };
 		552964E62B34A9B400030505 /* vim in Resources */ = {isa = PBXBuildFile; fileRef = 552964E52B34A9B400030505 /* vim */; };
 		D0A1C0023E4C0FFE00000001 /* Monaco in Resources */ = {isa = PBXBuildFile; fileRef = D0A1C0013E4C0FFE00000001 /* Monaco */; };
+		D0A1C0083E4C100400000001 /* Marked in Resources */ = {isa = PBXBuildFile; fileRef = D0A1C0073E4C100400000001 /* Marked */; };
 		D0A1C0043E4C100000000001 /* PierreDiffs in Resources */ = {isa = PBXBuildFile; fileRef = D0A1C0033E4C100000000001 /* PierreDiffs */; };
 		D0A1C0063E4C100200000001 /* bin in Resources */ = {isa = PBXBuildFile; fileRef = D0A1C0053E4C100200000001 /* bin */; };
 		819324582F24E78800A9ED8F /* DockTilePlugin.plugin in Copy DockTilePlugin */ = {isa = PBXBuildFile; fileRef = 8193244D2F24E6C000A9ED8F /* DockTilePlugin.plugin */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -76,6 +77,7 @@
 		55154BDF2B33911F001622DC /* ghostty */ = {isa = PBXFileReference; lastKnownFileType = folder; name = ghostty; path = "../zig-out/share/ghostty"; sourceTree = "<group>"; };
 		552964E52B34A9B400030505 /* vim */ = {isa = PBXFileReference; lastKnownFileType = folder; name = vim; path = "../zig-out/share/vim"; sourceTree = "<group>"; };
 		D0A1C0013E4C0FFE00000001 /* Monaco */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Monaco; path = Resources/Monaco; sourceTree = "<group>"; };
+		D0A1C0073E4C100400000001 /* Marked */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Marked; path = Resources/Marked; sourceTree = "<group>"; };
 		D0A1C0033E4C100000000001 /* PierreDiffs */ = {isa = PBXFileReference; lastKnownFileType = folder; name = PierreDiffs; path = Resources/PierreDiffs; sourceTree = "<group>"; };
 		D0A1C0053E4C100200000001 /* bin */ = {isa = PBXFileReference; lastKnownFileType = folder; name = bin; path = Resources/bin; sourceTree = "<group>"; };
 		810ACC9F2E9D3301004F8F92 /* GhosttyUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GhosttyUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -329,6 +331,7 @@
 				55154BDF2B33911F001622DC /* ghostty */,
 				A546F1132D7B68D7003B11A0 /* locale */,
 				A5985CE52C33060F00C57AD3 /* man */,
+				D0A1C0073E4C100400000001 /* Marked */,
 				D0A1C0013E4C0FFE00000001 /* Monaco */,
 				D0A1C0033E4C100000000001 /* PierreDiffs */,
 				D0A1C0053E4C100200000001 /* bin */,
@@ -583,6 +586,7 @@
 				55154BE02B33911F001622DC /* ghostty in Resources */,
 				A546F1142D7B68D7003B11A0 /* locale in Resources */,
 				A5985CE62C33060F00C57AD3 /* man in Resources */,
+				D0A1C0083E4C100400000001 /* Marked in Resources */,
 				D0A1C0023E4C0FFE00000001 /* Monaco in Resources */,
 				D0A1C0043E4C100000000001 /* PierreDiffs in Resources */,
 				D0A1C0063E4C100200000001 /* bin in Resources */,

@@ -13,12 +13,12 @@ If a task seems to require changes to core Ghostty code, stop and confirm with t
 - **Build macOS app:** never use `macos/build.nu`; invoke `xcodebuild` directly (do not use `zig build` for the app)
   - Debug build:
     `env -i HOME="$HOME" PATH="/usr/bin:/bin:/usr/sbin:/sbin" xcodebuild -project macos/Ghostty.xcodeproj -scheme Ghostty -configuration Debug SYMROOT=macos/build build`
-  - Release build:
-    `env -i HOME="$HOME" PATH="/usr/bin:/bin:/usr/sbin:/sbin" xcodebuild -project macos/Ghostty.xcodeproj -scheme Ghostty -configuration Release SYMROOT=macos/build build`
-  - Other supported configuration: `ReleaseLocal`
-  - Output: `macos/build/<configuration>/GingerTTY.app`
+  - Release build (for local production use):
+    `env -i HOME="$HOME" PATH="/usr/bin:/bin:/usr/sbin:/sbin" xcodebuild -project macos/Ghostty.xcodeproj -scheme Ghostty -configuration ReleaseLocal SYMROOT=macos/build build`
+  - Other supported configuration: `Release` (CI/distribution signing)
+  - Output path varies by configuration — the actual output lands in `macos/macos/build/<configuration>/GingerTTY.app` (not `macos/build/`). Always check `macos/macos/build/` for the fresh build.
   - Install built app:
-    `rsync -a --delete "macos/build/<configuration>/GingerTTY.app/" "/Applications/GingerTTY.app/"`
+    `rsync -a --delete "macos/macos/build/<configuration>/GingerTTY.app/" "/Applications/GingerTTY.app/"`
 - **Run unit tests:**
   `env -i HOME="$HOME" PATH="/usr/bin:/bin:/usr/sbin:/sbin" xcodebuild -project macos/Ghostty.xcodeproj -scheme Ghostty -configuration Debug SYMROOT=macos/build -skip-testing GhosttyUITests test`
   - The CLI test path skips `GhosttyUITests`.
