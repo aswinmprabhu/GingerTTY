@@ -127,9 +127,9 @@ struct TerminalPlanReviewTests {
     }
 
     @Test
-    func exitPlanModeHookNoOpsForNonPlanSubagent() throws {
+    func exitPlanModeHookNoOpsForNonExitPlanMode() throws {
         let payload = """
-        {"hook_event_name":"SubagentStop","agent_type":"Explore","session_id":"session-1","agent_id":"agent-1","last_assistant_message":"<proposed_plan>\\n## Plan\\n</proposed_plan>"}
+        {"tool_name":"SomeOtherTool","session_id":"session-1","agent_id":"agent-1"}
         """
 
         let result = try runExitPlanModeHook(payload: payload)
@@ -140,9 +140,9 @@ struct TerminalPlanReviewTests {
     }
 
     @Test
-    func exitPlanModeHookNoOpsWithoutPlanBlock() throws {
+    func exitPlanModeHookNoOpsWithoutPlanFilePath() throws {
         let payload = """
-        {"hook_event_name":"SubagentStop","agent_type":"Plan","session_id":"session-1","agent_id":"agent-1","last_assistant_message":"No plan here"}
+        {"tool_name":"ExitPlanMode","session_id":"session-1","agent_id":"agent-1","tool_input":{}}
         """
 
         let result = try runExitPlanModeHook(payload: payload)
@@ -154,12 +154,10 @@ struct TerminalPlanReviewTests {
 
     @Test
     func exitPlanModeHookBlocksWithRequestChangeReason() throws {
-        let payload = """
-        {"hook_event_name":"SubagentStop","agent_type":"Plan","session_id":"session-1","agent_id":"agent-1","last_assistant_message":"Before\\n<proposed_plan>\\n## Review Me\\n- Add review buttons\\n</proposed_plan>\\nAfter"}
-        """
+        let planContent = "## Review Me\n- Add review buttons\n"
 
         let result = try runExitPlanModeHook(
-            payload: payload,
+            planContent: planContent,
             osascriptStub: """
             #!/bin/sh
             printf '{"decision":"request_changes","comments":[{"startLine":2,"endLine":2,"text":"Clarify the request-changes flow."}],"finalFilePath":"%s","edited":true}\n' "$SCRATCH_PATH" > "$RESPONSE_PATH"
@@ -167,30 +165,17 @@ struct TerminalPlanReviewTests {
         )
 
         #expect(result.status == 0)
-        #expect(result.stdout.contains("\"decision\": \"block\""))
+        #expect(result.stdout.contains("\"behavior\": \"deny\""))
         #expect(result.stdout.contains("Plan review requested changes."))
         #expect(result.stdout.contains("Clarify the request-changes flow."))
-
-        let scratchFiles = result.createdFiles.filter { $0.pathExtension == "md" }
-        #expect(scratchFiles.count == 1)
-        let scratchContents = try String(contentsOf: scratchFiles[0], encoding: .utf8)
-        #expect(scratchContents == "## Review Me\n- Add review buttons\n")
     }
 
     @Test
     func exitPlanModeHookOpensNativeSavedPlanFlow() throws {
-        let payload = """
-        {"hook_event_name":"Stop","session_id":"session-1","last_assistant_message":"User approved Claude's plan\\nPlan saved to: ~/.claude/plans/native-plan.md · /plan to edit"}
-        """
+        let planContent = "## Native Plan\n- Step one\n"
 
         let result = try runExitPlanModeHook(
-            payload: payload,
-            planFiles: [
-                ".claude/plans/native-plan.md": """
-                ## Native Plan
-                - Step one
-                """
-            ],
+            planContent: planContent,
             osascriptStub: """
             #!/bin/sh
             printf '{"decision":"request_changes","comments":[{"startLine":1,"endLine":1,"text":"Update the title."}],"finalFilePath":"%s","edited":false}\n' "$SCRATCH_PATH" > "$RESPONSE_PATH"
@@ -199,25 +184,38 @@ struct TerminalPlanReviewTests {
 
         #expect(result.status == 0)
         #expect(result.stdout.contains("Update the title."))
-        #expect(result.createdFiles.contains { $0.lastPathComponent == "native-plan.md" } == false)
     }
 
     private func runExitPlanModeHook(
         payload: String,
-        planFiles: [String: String] = [:],
+        osascriptStub: String = "#!/bin/sh\nexit 0\n"
+    ) throws -> HookExecutionResult {
+        try runExitPlanModeHook(planContent: nil, payload: payload, osascriptStub: osascriptStub)
+    }
+
+    private func runExitPlanModeHook(
+        planContent: String?,
+        payload: String? = nil,
         osascriptStub: String = "#!/bin/sh\nexit 0\n"
     ) throws -> HookExecutionResult {
         let tempRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let binDir = tempRoot.appendingPathComponent("bin", isDirectory: true)
         try FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true)
 
-        for (relativePath, contents) in planFiles {
-            let fileURL = tempRoot.appendingPathComponent(relativePath)
-            try FileManager.default.createDirectory(
-                at: fileURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try contents.write(to: fileURL, atomically: true, encoding: .utf8)
+        let effectivePayload: String
+        if let payload {
+            effectivePayload = payload
+        } else if let planContent {
+            let planDir = tempRoot.appendingPathComponent("plans", isDirectory: true)
+            try FileManager.default.createDirectory(at: planDir, withIntermediateDirectories: true)
+            let planFile = planDir.appendingPathComponent("test-plan.md")
+            try planContent.write(to: planFile, atomically: true, encoding: .utf8)
+            let escapedPath = planFile.path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+            effectivePayload = """
+            {"tool_name":"ExitPlanMode","session_id":"session-1","agent_id":"agent-1","tool_input":{"planFilePath":"\(escapedPath)"}}
+            """
+        } else {
+            effectivePayload = "{}"
         }
 
         let stubPath = binDir.appendingPathComponent("osascript")
@@ -244,7 +242,7 @@ struct TerminalPlanReviewTests {
         process.standardError = stderrPipe
 
         try process.run()
-        stdinPipe.fileHandleForWriting.write(Data(payload.utf8))
+        stdinPipe.fileHandleForWriting.write(Data(effectivePayload.utf8))
         stdinPipe.fileHandleForWriting.closeFile()
         process.waitUntilExit()
 
