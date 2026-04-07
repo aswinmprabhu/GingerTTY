@@ -64,19 +64,78 @@ Controls the tab bar style.
 | `horizontal` | Custom horizontal tab bar |
 | `native` | macOS native tab bar (upstream Ghostty behavior) |
 
-Any key prefixed with `gingertty-` is also reserved for future GingerTTY configuration and will not produce unknown-key warnings.
+### `gingertty-allow-from-notification-behavior`
+
+Controls what the "Allow" button does on permission request notifications.
+
+| Value | Description |
+|---|---|
+| `once` (default) | Allows the single tool invocation that triggered the prompt |
+| `session` | Allows the tool for the rest of the Claude Code session (in-memory only, not persisted to disk) |
+
+Any key prefixed with `gingertty-` is reserved for GingerTTY configuration and will not produce unknown-key warnings.
 
 All other Ghostty configuration works as documented at [ghostty.org/docs](https://ghostty.org/docs).
 
-## AppleScript: Agent Status
+## Claude Code Integration
 
-GingerTTY extends Ghostty's AppleScript dictionary with a `set agent status` command that lets CLI agents report their status in the tab bar.
+GingerTTY ships a `claude` wrapper script and a hook handler (`gingertty-hook.sh`) that are automatically placed on `PATH` inside GingerTTY terminals. When you run `claude` inside GingerTTY:
+
+1. **Tab status** — The tab bar shows live agent status (Running, Done, Need input) via Claude Code hooks.
+2. **Permission notifications** — When Claude Code needs tool permission, a macOS notification appears with an "Allow" button. Denial is handled from the terminal prompt.
+3. **Plan review** — When Claude proposes a plan, GingerTTY opens it in the built-in file viewer for review with inline comments.
+
+The wrapper injects hooks via `--settings` and sets environment variables (`GINGERTTY`, `GINGERTTY_TERMINAL_ID`, `GINGERTTY_BIN_DIR`) so hooks can communicate back to the app via AppleScript. Outside GingerTTY, the wrapper passes through to the real `claude` binary transparently.
+
+## AppleScript
+
+GingerTTY extends Ghostty's AppleScript dictionary with commands for agent integration. These are called by GingerTTY's hook scripts but can also be used directly.
+
+### `set agent status`
+
+Sets or clears the agent status indicator on a terminal tab.
 
 ```applescript
 tell application "GingerTTY" to set agent status "Running" on terminal id "TERMINAL-UUID"
 ```
 
 Supported status values: `"Running"`, `"Done"`, `"Need input"`, or `""` to clear.
+
+### `present permission request`
+
+Presents a macOS notification for a Claude Code permission request.
+
+```applescript
+tell application "GingerTTY" to present permission request "npm test" ¬
+    response path "/tmp/response.json" ¬
+    session id "session-1" ¬
+    agent id "main" ¬
+    tool name "Bash" ¬
+    suggestions json "[{\"type\":\"addRules\", ...}]" ¬
+    on terminal id "TERMINAL-UUID"
+```
+
+Parameters:
+- **direct parameter** — Summary of the tool input
+- **response path** — Where to write the permission decision JSON
+- **session id** / **agent id** — Claude session and agent identifiers
+- **tool name** — The Claude tool requesting permission (e.g., `Bash`, `Write`)
+- **suggestions json** (optional) — Claude's `permission_suggestions` for session-scoped allow rules
+- **on** — Target terminal
+
+### `open plan review`
+
+Opens a markdown plan in the built-in file viewer for review.
+
+```applescript
+tell application "GingerTTY" to open plan review "/tmp/plan.md" ¬
+    response path "/tmp/review-response.json" ¬
+    session id "session-1" ¬
+    agent id "main" ¬
+    on terminal id "TERMINAL-UUID"
+```
+
+The reviewer can approve the plan or request changes with inline comments. The decision is written as JSON to the response path.
 
 ## Ghostty
 
