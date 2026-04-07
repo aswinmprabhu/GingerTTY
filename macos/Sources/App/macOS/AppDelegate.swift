@@ -265,6 +265,10 @@ class AppDelegate: NSObject,
             UNNotificationAction(identifier: Ghostty.userNotificationActionShow, title: "Show")
         ]
 
+        let permissionActions = [
+            UNNotificationAction(identifier: "gingertty.permission.allow", title: "Allow"),
+        ]
+
         let center = UNUserNotificationCenter.current()
 
         center.setNotificationCategories([
@@ -273,7 +277,13 @@ class AppDelegate: NSObject,
                 actions: actions,
                 intentIdentifiers: [],
                 options: [.customDismissAction]
-            )
+            ),
+            UNNotificationCategory(
+                identifier: "com.gingertty.permissionRequest",
+                actions: permissionActions,
+                intentIdentifiers: [],
+                options: []
+            ),
         ])
         center.delegate = self
 
@@ -1009,21 +1019,57 @@ class AppDelegate: NSObject,
 
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        didReceive: UNNotificationResponse,
-        withCompletionHandler: () -> Void
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: () -> Void
     ) {
-        ghostty.handleUserNotification(response: didReceive)
-        withCompletionHandler()
+        let content = response.notification.request.content
+        if content.categoryIdentifier == "com.gingertty.permissionRequest" {
+            handlePermissionNotificationResponse(response)
+            completionHandler()
+            return
+        }
+
+        ghostty.handleUserNotification(response: response)
+        completionHandler()
     }
 
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        willPresent: UNNotification,
-        withCompletionHandler: (UNNotificationPresentationOptions) -> Void
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: (UNNotificationPresentationOptions) -> Void
     ) {
-        let shouldPresent = ghostty.shouldPresentNotification(notification: willPresent)
+        if notification.request.content.categoryIdentifier == "com.gingertty.permissionRequest" {
+            completionHandler([.banner, .sound])
+            return
+        }
+
+        let shouldPresent = ghostty.shouldPresentNotification(notification: notification)
         let options: UNNotificationPresentationOptions = shouldPresent ? [.banner, .sound] : []
-        withCompletionHandler(options)
+        completionHandler(options)
+    }
+
+    /// The "Allow" button behavior depends on `gingertty-allow-from-notification-behavior`:
+    /// - `once` (default): one-time allow for this specific tool invocation
+    /// - `session`: allow for the rest of the Claude session via updatedPermissions
+    private func handlePermissionNotificationResponse(_ response: UNNotificationResponse) {
+        guard response.actionIdentifier == "gingertty.permission.allow" else { return }
+
+        let userInfo = response.notification.request.content.userInfo
+        guard let responseFilePath = userInfo["responseFilePath"] as? String else { return }
+
+        let useSession = ghostty.config.allowFromNotificationBehavior == .session
+        if useSession {
+            let suggestionsJSON = userInfo["suggestionsJSON"] as? String
+            TerminalPermissionRequest.writeDecisionToPath(
+                responseFilePath,
+                decision: .allowForSession(suggestionsJSON: suggestionsJSON)
+            )
+        } else {
+            TerminalPermissionRequest.writeDecisionToPath(
+                responseFilePath,
+                decision: .allow
+            )
+        }
     }
 
     // MARK: - GhosttyAppDelegate

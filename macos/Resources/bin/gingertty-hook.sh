@@ -15,12 +15,163 @@ read_hook_payload() {
     cat
 }
 
+permission_request_timeout_seconds() {
+    local timeout="${GINGERTTY_PERMISSION_REQUEST_TIMEOUT_SECONDS:-30}"
+    if [[ "$timeout" =~ ^[0-9]+$ ]] && [[ "$timeout" -gt 0 ]]; then
+        printf '%s\n' "$timeout"
+    else
+        printf '30\n'
+    fi
+}
+
 set_status() {
     osascript -e "tell application \"GingerTTY\" to set agent status \"$1\" on terminal id \"$TERMINAL_ID\"" &>/dev/null
 }
 
 clear_status() {
     osascript -e "tell application \"GingerTTY\" to set agent status \"\" on terminal id \"$TERMINAL_ID\"" &>/dev/null
+}
+
+prepare_permission_request_files() {
+    local payload="$1"
+
+    /usr/bin/python3 - "$TERMINAL_ID" "$payload" <<'PY'
+import hashlib
+import json
+import pathlib
+import shlex
+import sys
+import time
+
+
+def truncate(value: str, limit: int = 180) -> str:
+    value = " ".join(value.split())
+    if len(value) <= limit:
+        return value
+    if limit <= 3:
+        return value[:limit]
+    return value[: limit - 3] + "..."
+
+
+def summarize_tool_input(tool_name: str, tool_input) -> str:
+    if not isinstance(tool_input, dict):
+        return truncate(str(tool_input or tool_name))
+
+    if tool_name == "Bash":
+        description = str(tool_input.get("description") or "").strip()
+        command = str(tool_input.get("command") or "").strip()
+        if description and command:
+            return truncate(f"{description} - {command}")
+        if description:
+            return truncate(description)
+        if command:
+            return truncate(command)
+
+    if tool_name in {"Read", "Write", "Edit", "MultiEdit"}:
+        path = str(tool_input.get("file_path") or tool_input.get("path") or "").strip()
+        if path:
+            return truncate(path)
+
+    try:
+        return truncate(json.dumps(tool_input, sort_keys=True, separators=(",", ": ")))
+    except TypeError:
+        return truncate(str(tool_input))
+
+
+terminal_id = sys.argv[1]
+
+try:
+    payload = json.loads(sys.argv[2])
+except json.JSONDecodeError:
+    raise SystemExit(0)
+
+if payload.get("hook_event_name") != "PermissionRequest":
+    raise SystemExit(0)
+
+tool_name = str(payload.get("tool_name") or "").strip()
+if not tool_name:
+    raise SystemExit(0)
+
+tool_input = payload.get("tool_input") or {}
+session_id = str(payload.get("session_id") or "session").strip() or "session"
+agent_id = str(payload.get("agent_id") or "main").strip() or "main"
+suggestions = payload.get("permission_suggestions")
+summary = summarize_tool_input(tool_name, tool_input)
+
+base = pathlib.Path.home() / "Library" / "Application Support" / "GingerTTY" / "PermissionRequests" / terminal_id
+base.mkdir(parents=True, exist_ok=True)
+
+digest_source = json.dumps(
+    {
+        "tool_name": tool_name,
+        "tool_input": tool_input,
+        "session_id": session_id,
+        "agent_id": agent_id,
+    },
+    sort_keys=True,
+    separators=(",", ":"),
+)
+signature = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()[:12]
+stem = f"{session_id}-{agent_id}-{int(time.time())}-{signature}"
+response_path = base / f"{stem}.json"
+if response_path.exists():
+    response_path.unlink()
+
+suggestions_json = ""
+if suggestions:
+    suggestions_json = json.dumps(suggestions, sort_keys=True, separators=(",", ":"))
+
+print(f"RESPONSE_PATH={shlex.quote(str(response_path))}")
+print(f"SESSION_ID={shlex.quote(session_id)}")
+print(f"AGENT_ID={shlex.quote(agent_id)}")
+print(f"TOOL_NAME={shlex.quote(tool_name)}")
+print(f"INPUT_SUMMARY={shlex.quote(summary)}")
+print(f"SUGGESTIONS_JSON={shlex.quote(suggestions_json)}")
+PY
+}
+
+open_permission_request() {
+    RESPONSE_PATH="$1" \
+    SESSION_ID="$2" \
+    AGENT_ID="$3" \
+    TOOL_NAME="$4" \
+    INPUT_SUMMARY="$5" \
+    SUGGESTIONS_JSON="$6" \
+    TERMINAL_ID="$TERMINAL_ID" \
+    osascript <<'APPLESCRIPT' &>/dev/null
+set responsePath to system attribute "RESPONSE_PATH"
+set sessionID to system attribute "SESSION_ID"
+set agentID to system attribute "AGENT_ID"
+set toolName to system attribute "TOOL_NAME"
+set inputSummary to system attribute "INPUT_SUMMARY"
+set suggestionsJSON to system attribute "SUGGESTIONS_JSON"
+set terminalID to system attribute "TERMINAL_ID"
+
+tell application "GingerTTY"
+    present permission request inputSummary response path responsePath session id sessionID agent id agentID tool name toolName suggestions json suggestionsJSON on terminal id terminalID
+end tell
+APPLESCRIPT
+}
+
+wait_for_permission_request_response() {
+    local response_path="$1"
+    local timeout="$2"
+    local waited=0
+
+    while [[ $waited -lt $timeout ]]; do
+        if [[ -s "$response_path" ]]; then
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    return 1
+}
+
+emit_permission_request_decision() {
+    local response_path="$1"
+    cat "$response_path"
 }
 
 prepare_plan_review_files() {
@@ -188,9 +339,29 @@ PY
 
 case "$EVENT" in
     UserPromptSubmit)  set_status "Running" ;;
+    PreToolUse)        set_status "Running" ;;
     Stop)              set_status "Done" ;;
     Notification)      set_status "Need input" ;;
     SessionEnd)        clear_status ;;
+    PermissionRequest)
+        PAYLOAD="$(read_hook_payload)"
+        echo "[$(date)] PermissionRequest payload: $PAYLOAD" >> /tmp/gingertty-hook.log
+        PREPARED_VARS="$(prepare_permission_request_files "$PAYLOAD")" || exit 0
+        [[ -z "${PREPARED_VARS:-}" ]] && exit 0
+        eval "$PREPARED_VARS"
+        echo "[$(date)] Opening permission request: tool=$TOOL_NAME summary=$INPUT_SUMMARY response=$RESPONSE_PATH" >> /tmp/gingertty-hook.log
+        if open_permission_request "$RESPONSE_PATH" "$SESSION_ID" "$AGENT_ID" "$TOOL_NAME" "$INPUT_SUMMARY" "$SUGGESTIONS_JSON"; then
+            echo "[$(date)] Waiting for permission response at: $RESPONSE_PATH" >> /tmp/gingertty-hook.log
+            if wait_for_permission_request_response "$RESPONSE_PATH" "$(permission_request_timeout_seconds)"; then
+                echo "[$(date)] Permission response received" >> /tmp/gingertty-hook.log
+                emit_permission_request_decision "$RESPONSE_PATH"
+            else
+                echo "[$(date)] Permission request timed out" >> /tmp/gingertty-hook.log
+            fi
+        else
+            echo "[$(date)] open_permission_request failed" >> /tmp/gingertty-hook.log
+        fi
+        ;;
     ExitPlanMode)
         echo "[$(date)] ExitPlanMode hook started" >> /tmp/gingertty-hook.log
         PAYLOAD="$(read_hook_payload)"

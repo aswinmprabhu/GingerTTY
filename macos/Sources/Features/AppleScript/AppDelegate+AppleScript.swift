@@ -1,4 +1,5 @@
 import AppKit
+import UserNotifications
 
 // Application-level Cocoa scripting hooks for the Ghostty AppleScript dictionary.
 //
@@ -237,6 +238,102 @@ extension NSApplication {
         let trimmed = status.trimmingCharacters(in: .whitespacesAndNewlines)
         controller.tabState.setAgentStatus(trimmed.isEmpty ? nil : trimmed)
         NotificationCenter.default.post(name: .gingerTTYTabGroupDidChange, object: controller.window)
+    }
+
+    /// Handler for the `present permission request` AppleScript command.
+    ///
+    /// Required selector name from the command in `sdef`:
+    /// `handlePresentPermissionRequestScriptCommand:`.
+    @objc(handlePresentPermissionRequestScriptCommand:)
+    func handlePresentPermissionRequestScriptCommand(_ command: NSScriptCommand) {
+        guard validateScript(command: command) else { return }
+
+        guard let inputSummary = command.directParameter as? String else {
+            command.scriptErrorNumber = errAEParamMissed
+            command.scriptErrorString = "Missing tool input summary."
+            return
+        }
+
+        guard let responsePath = command.evaluatedArguments?["responsePath"] as? String, !responsePath.isEmpty else {
+            command.scriptErrorNumber = errAEParamMissed
+            command.scriptErrorString = "Missing response path."
+            return
+        }
+
+        guard let sessionID = command.evaluatedArguments?["sessionID"] as? String, !sessionID.isEmpty else {
+            command.scriptErrorNumber = errAEParamMissed
+            command.scriptErrorString = "Missing session ID."
+            return
+        }
+
+        guard let agentID = command.evaluatedArguments?["agentID"] as? String, !agentID.isEmpty else {
+            command.scriptErrorNumber = errAEParamMissed
+            command.scriptErrorString = "Missing agent ID."
+            return
+        }
+
+        guard let toolName = command.evaluatedArguments?["toolName"] as? String, !toolName.isEmpty else {
+            command.scriptErrorNumber = errAEParamMissed
+            command.scriptErrorString = "Missing tool name."
+            return
+        }
+
+        guard let terminal = command.evaluatedArguments?["on"] as? ScriptTerminal else {
+            command.scriptErrorNumber = errAEParamMissed
+            command.scriptErrorString = "Missing terminal target."
+            return
+        }
+
+        guard let surfaceView = terminal.surfaceView,
+              let controller = surfaceView.window?.windowController as? TerminalController else {
+            command.scriptErrorNumber = errAEEventFailed
+            command.scriptErrorString = "Terminal controller is unavailable."
+            return
+        }
+
+        let suggestionsJSON = command.evaluatedArguments?["suggestionsJSON"] as? String
+        let normalizedSuggestionsJSON: String?
+        if let suggestionsJSON,
+           !suggestionsJSON.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            normalizedSuggestionsJSON = suggestionsJSON
+        } else {
+            normalizedSuggestionsJSON = nil
+        }
+        let requestedAt = Date()
+        let request = TerminalPermissionRequest(
+            id: "\(sessionID):\(agentID):\(toolName):\(requestedAt.timeIntervalSince1970)",
+            terminalID: terminal.stableID,
+            sessionID: sessionID,
+            agentID: agentID,
+            toolName: toolName,
+            toolInputSummary: inputSummary,
+            suggestionsJSON: normalizedSuggestionsJSON,
+            responseFilePath: responsePath,
+            requestedAt: requestedAt,
+            expiresAt: requestedAt.addingTimeInterval(30)
+        )
+
+        controller.tabState.presentPermissionRequest(request)
+        NotificationCenter.default.post(name: .gingerTTYTabGroupDidChange, object: controller.window)
+
+        let content = UNMutableNotificationContent()
+        content.title = "Permission Request: \(toolName)"
+        content.body = inputSummary
+        content.sound = .default
+        content.categoryIdentifier = "com.gingertty.permissionRequest"
+        content.userInfo = [
+            "responseFilePath": responsePath,
+            "toolName": toolName,
+            "suggestionsJSON": normalizedSuggestionsJSON ?? "",
+            "terminalId": terminal.stableID,
+        ]
+
+        let notificationRequest = UNNotificationRequest(
+            identifier: request.id,
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(notificationRequest)
     }
 
     /// Handler for the `open plan review` AppleScript command.

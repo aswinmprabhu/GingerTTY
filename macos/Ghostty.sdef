@@ -28,6 +28,9 @@
       <responds-to command="set agent status">
         <cocoa method="handleSetAgentStatusScriptCommand:"/>
       </responds-to>
+      <responds-to command="present permission request">
+        <cocoa method="handlePresentPermissionRequestScriptCommand:"/>
+      </responds-to>
       <responds-to command="open plan review">
         <cocoa method="handleOpenPlanReviewScriptCommand:"/>
       </responds-to>
@@ -218,6 +221,28 @@
 
     <command name="set agent status" code="GhstSASt" description="Set the agent status indicator on a terminal tab.">
       <direct-parameter type="text" description="The status text (empty string to clear)."/>
+      <parameter name="on" code="GonT" type="terminal" description="Target terminal.">
+        <cocoa key="on"/>
+      </parameter>
+    </command>
+
+    <command name="present permission request" code="GhstPPRq" description="Present a Claude Code permission request for a terminal.">
+      <direct-parameter type="text" description="Summary of the requested tool input."/>
+      <parameter name="response path" code="GPpP" type="text" description="Absolute path where GingerTTY should write the permission decision JSON.">
+        <cocoa key="responsePath"/>
+      </parameter>
+      <parameter name="session id" code="GPpS" type="text" description="Claude session identifier for the request.">
+        <cocoa key="sessionID"/>
+      </parameter>
+      <parameter name="agent id" code="GPpA" type="text" description="Claude agent identifier for the request.">
+        <cocoa key="agentID"/>
+      </parameter>
+      <parameter name="tool name" code="GPpT" type="text" description="Claude tool name for the request.">
+        <cocoa key="toolName"/>
+      </parameter>
+      <parameter name="suggestions json" code="GPpJ" type="text" optional="yes" description="Serialized Claude permission suggestions JSON.">
+        <cocoa key="suggestionsJSON"/>
+      </parameter>
       <parameter name="on" code="GonT" type="terminal" description="Target terminal.">
         <cocoa key="on"/>
       </parameter>

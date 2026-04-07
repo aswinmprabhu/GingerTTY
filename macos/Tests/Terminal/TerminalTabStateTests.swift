@@ -246,6 +246,67 @@ struct TerminalTabStateTests {
         #expect(tab.selectedDiffFile == nil)
         #expect(tab.viewerFilePath == nil)
     }
+
+    @Test
+    func setAgentStatusTracksLastActivityTimestamp() {
+        let tab = TerminalTabState()
+        let startedAt = Date(timeIntervalSince1970: 10)
+        let finishedAt = Date(timeIntervalSince1970: 20)
+
+        tab.setAgentStatus("Running", updatedAt: startedAt)
+        #expect(tab.agentStatus == "Running")
+        #expect(tab.lastAgentActivityAt == startedAt)
+
+        tab.setAgentStatus("Done", updatedAt: finishedAt)
+        #expect(tab.agentStatus == "Done")
+        #expect(tab.lastAgentActivityAt == finishedAt)
+    }
+
+    @Test
+    func setAgentStatusRunningClearsPendingPermissionRequest() {
+        let tab = TerminalTabState()
+        let request = makePermissionRequest(
+            requestedAt: Date(timeIntervalSince1970: 10),
+            expiresAt: Date(timeIntervalSince1970: 40)
+        )
+
+        tab.presentPermissionRequest(request)
+        #expect(tab.pendingPermissionRequest == request)
+
+        tab.setAgentStatus("Running", updatedAt: Date(timeIntervalSince1970: 11))
+        #expect(tab.pendingPermissionRequest == nil)
+    }
+
+    @Test
+    func presentPermissionRequestStoresPendingApproval() {
+        let tab = TerminalTabState()
+        let request = makePermissionRequest(
+            requestedAt: Date(timeIntervalSince1970: 42),
+            expiresAt: Date(timeIntervalSince1970: 72)
+        )
+
+        tab.setAgentStatus("Running", updatedAt: Date(timeIntervalSince1970: 21))
+        tab.presentPermissionRequest(request)
+
+        #expect(tab.pendingPermissionRequest == request)
+        #expect(tab.lastAgentActivityAt == request.requestedAt)
+    }
+
+    @Test
+    func clearExpiredPermissionRequestRemovesStaleApproval() {
+        let tab = TerminalTabState()
+        let request = makePermissionRequest(
+            requestedAt: Date(timeIntervalSince1970: 10),
+            expiresAt: Date(timeIntervalSince1970: 15)
+        )
+
+        tab.presentPermissionRequest(request)
+        tab.clearExpiredPermissionRequest(now: Date(timeIntervalSince1970: 14))
+        #expect(tab.pendingPermissionRequest == request)
+
+        tab.clearExpiredPermissionRequest(now: Date(timeIntervalSince1970: 16))
+        #expect(tab.pendingPermissionRequest == nil)
+    }
 }
 
 private func makeThread(
@@ -285,5 +346,23 @@ private func makeComment(
         startLine: 42,
         originalStartLine: 42,
         replyToID: nil
+    )
+}
+
+private func makePermissionRequest(
+    requestedAt: Date = Date(timeIntervalSince1970: 1),
+    expiresAt: Date = Date(timeIntervalSince1970: 31)
+) -> TerminalPermissionRequest {
+    TerminalPermissionRequest(
+        id: "request-1",
+        terminalID: "terminal-1",
+        sessionID: "session-1",
+        agentID: "agent-1",
+        toolName: "Bash",
+        toolInputSummary: "npm test",
+        suggestionsJSON: nil,
+        responseFilePath: "/tmp/request-1.json",
+        requestedAt: requestedAt,
+        expiresAt: expiresAt
     )
 }

@@ -1,4 +1,5 @@
 import Foundation
+import UserNotifications
 
 enum TerminalInspectorTab: String, CaseIterable, Codable, Identifiable {
     case changes
@@ -98,6 +99,8 @@ final class TerminalTabState: ObservableObject, Identifiable {
     // MARK: Agent status (set via AppleScript by CLI wrappers)
 
     @Published private(set) var agentStatus: String?
+    @Published private(set) var lastAgentActivityAt: Date?
+    @Published private(set) var pendingPermissionRequest: TerminalPermissionRequest?
 
     // MARK: Merge state
 
@@ -191,7 +194,7 @@ final class TerminalTabState: ObservableObject, Identifiable {
         workingDirectory = newValue
     }
 
-    func setAgentStatus(_ status: String?) {
+    func setAgentStatus(_ status: String?, updatedAt: Date = Date()) {
         // Don't let "Need input" overwrite "Done" — a Notification event
         // often fires right after Stop just to alert the user, not because
         // the agent actually needs input.
@@ -199,6 +202,39 @@ final class TerminalTabState: ObservableObject, Identifiable {
             return
         }
         agentStatus = status
+        if status != nil {
+            lastAgentActivityAt = updatedAt
+        }
+        if status == "Running" || status == "Done" {
+            removePermissionNotification()
+            pendingPermissionRequest = nil
+        }
+    }
+
+    func presentPermissionRequest(_ request: TerminalPermissionRequest) {
+        pendingPermissionRequest = request
+        if agentStatus != nil {
+            lastAgentActivityAt = request.requestedAt
+        }
+    }
+
+    func clearPendingPermissionRequest() {
+        removePermissionNotification()
+        pendingPermissionRequest = nil
+    }
+
+    func clearExpiredPermissionRequest(now: Date = Date()) {
+        guard let pendingPermissionRequest, pendingPermissionRequest.expiresAt <= now else {
+            return
+        }
+        removePermissionNotification()
+        self.pendingPermissionRequest = nil
+    }
+
+    private func removePermissionNotification() {
+        guard let request = pendingPermissionRequest else { return }
+        UNUserNotificationCenter.current()
+            .removeDeliveredNotifications(withIdentifiers: [request.id])
     }
 
     func resetRepositoryScopedState() {
@@ -211,6 +247,8 @@ final class TerminalTabState: ObservableObject, Identifiable {
         reviewSubmitError = nil
         mergeInProgress = false
         mergeError = nil
+        removePermissionNotification()
+        pendingPermissionRequest = nil
         planReviewSession = nil
         planReviewComments = []
         isPlanReviewSubmitting = false

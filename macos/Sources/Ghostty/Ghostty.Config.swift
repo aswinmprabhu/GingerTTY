@@ -45,6 +45,10 @@ extension Ghostty {
 
         var usesCustomMacOSTabBar: Bool { macosTabBarMode.usesCustomTabBar }
 
+        var allowFromNotificationBehavior: AllowFromNotificationBehavior {
+            customConfig.allowFromNotificationBehavior
+        }
+
 
         init(config: ghostty_config_t?, customConfig: CustomConfig) {
             self.config = config
@@ -770,8 +774,14 @@ extension Ghostty.Config {
         }
     }
 
+    enum AllowFromNotificationBehavior: String, Equatable {
+        case once
+        case session
+    }
+
     struct CustomConfig {
         let macosTabBarMode: MacOSTabBarMode
+        let allowFromNotificationBehavior: AllowFromNotificationBehavior
 
         init(
             preferredPath: String? = nil,
@@ -783,7 +793,9 @@ extension Ghostty.Config {
                 environment: environment,
                 fileManager: fileManager
             )
-            self.macosTabBarMode = parser.loadTabBarMode()
+            let parsed = parser.loadCustomConfig()
+            self.macosTabBarMode = parsed.tabBarMode
+            self.allowFromNotificationBehavior = parsed.allowFromNotificationBehavior
         }
 
         private struct Parser {
@@ -791,19 +803,20 @@ extension Ghostty.Config {
             let environment: [String: String]
             let fileManager: FileManager
 
-            func loadTabBarMode() -> MacOSTabBarMode {
+            struct ParsedValues {
                 var tabBarMode: MacOSTabBarMode = .vertical
+                var allowFromNotificationBehavior: AllowFromNotificationBehavior = .once
+            }
+
+            func loadCustomConfig() -> ParsedValues {
+                var values = ParsedValues()
                 var visitedPaths: Set<String> = []
 
                 for url in rootConfigFiles() {
-                    loadFile(
-                        at: url,
-                        tabBarMode: &tabBarMode,
-                        visitedPaths: &visitedPaths
-                    )
+                    loadFile(at: url, values: &values, visitedPaths: &visitedPaths)
                 }
 
-                return tabBarMode
+                return values
             }
 
             private func rootConfigFiles() -> [URL] {
@@ -843,7 +856,7 @@ extension Ghostty.Config {
 
             private func loadFile(
                 at url: URL,
-                tabBarMode: inout MacOSTabBarMode,
+                values: inout ParsedValues,
                 visitedPaths: inout Set<String>
             ) {
                 let path = url.standardizedFileURL.path
@@ -866,9 +879,17 @@ extension Ghostty.Config {
                         continue
                     }
 
-                    if entry.key == "macos-tab-bar",
-                       let parsedMode = MacOSTabBarMode(rawValue: normalizedValue(entry.value)) {
-                        tabBarMode = parsedMode
+                    switch entry.key {
+                    case "macos-tab-bar":
+                        if let parsed = MacOSTabBarMode(rawValue: normalizedValue(entry.value)) {
+                            values.tabBarMode = parsed
+                        }
+                    case "gingertty-allow-from-notification-behavior":
+                        if let parsed = AllowFromNotificationBehavior(rawValue: normalizedValue(entry.value)) {
+                            values.allowFromNotificationBehavior = parsed
+                        }
+                    default:
+                        break
                     }
                 }
 
@@ -876,7 +897,7 @@ extension Ghostty.Config {
                     if !includedFile.isOptional || fileManager.fileExists(atPath: includedFile.url.path) {
                         loadFile(
                             at: includedFile.url,
-                            tabBarMode: &tabBarMode,
+                            values: &values,
                             visitedPaths: &visitedPaths
                         )
                     }
