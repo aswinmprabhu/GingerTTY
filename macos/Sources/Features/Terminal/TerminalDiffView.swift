@@ -377,6 +377,7 @@ struct TerminalDiffView: View {
                     reviewThread: tab.activeReviewThread,
                     isReviewMode: tab.isReviewMode,
                     draftComments: tab.localReviewComments.filter { $0.filePath == tab.selectedDiffFile?.path },
+                    selectedDraftCommentID: tab.selectedReviewCommentID?.uuidString,
                     findModel: findModel,
                     onLinesSelected: { startLine, endLine, side in
                         tab.pendingSelectionStart = startLine
@@ -412,6 +413,12 @@ struct TerminalDiffView: View {
                     onDeleteDraft: { commentID in
                         if let uuid = UUID(uuidString: commentID) {
                             tab.removeReviewComment(id: uuid)
+                            controller.objectWillChange.send()
+                        }
+                    },
+                    onUpdateDraft: { commentID, body in
+                        if let uuid = UUID(uuidString: commentID) {
+                            tab.updateReviewComment(id: uuid, text: body)
                             controller.objectWillChange.send()
                         }
                     }
@@ -498,6 +505,7 @@ struct PierreDiffWebView: NSViewRepresentable {
     let reviewThread: TerminalPullRequestReviewThread?
     let isReviewMode: Bool
     let draftComments: [TerminalLocalReviewComment]
+    let selectedDraftCommentID: String?
     var findModel: WebViewFindModel? = nil
     let onLinesSelected: (_ startLine: Int, _ endLine: Int, _ side: String) -> Void
     let onAddThreadToChat: () -> Void
@@ -505,6 +513,7 @@ struct PierreDiffWebView: NSViewRepresentable {
     let onResolveThread: (_ threadID: String, _ resolve: Bool) -> Void
     let onStartReview: (_ startLine: Int, _ endLine: Int, _ side: String, _ body: String) -> Void
     let onDeleteDraft: (_ commentID: String) -> Void
+    let onUpdateDraft: (_ commentID: String, _ body: String) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -513,7 +522,8 @@ struct PierreDiffWebView: NSViewRepresentable {
             onReplyToThread: onReplyToThread,
             onResolveThread: onResolveThread,
             onStartReview: onStartReview,
-            onDeleteDraft: onDeleteDraft
+            onDeleteDraft: onDeleteDraft,
+            onUpdateDraft: onUpdateDraft
         )
     }
 
@@ -526,6 +536,7 @@ struct PierreDiffWebView: NSViewRepresentable {
         contentController.add(context.coordinator, name: "resolveThread")
         contentController.add(context.coordinator, name: "startReview")
         contentController.add(context.coordinator, name: "deleteDraft")
+        contentController.add(context.coordinator, name: "updateDraft")
         config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
 
         let webView = WKWebView(frame: .zero, configuration: config)
@@ -537,6 +548,7 @@ struct PierreDiffWebView: NSViewRepresentable {
         context.coordinator.lastFileName = fileName
         context.coordinator.lastIsReviewMode = isReviewMode
         context.coordinator.lastThemeType = theme.pierreThemeType
+        context.coordinator.lastSelectedDraftCommentID = selectedDraftCommentID
         findModel?.webView = webView
 
         guard let baseURL = PierreLocalResources.baseURL else {
@@ -552,7 +564,8 @@ struct PierreDiffWebView: NSViewRepresentable {
             fileContent: fileContent,
             theme: theme,
             reviewThread: reviewThread, isReviewMode: isReviewMode,
-            draftComments: draftComments
+            draftComments: draftComments,
+            selectedDraftCommentID: selectedDraftCommentID
         )
         webView.loadHTMLString(html, baseURL: baseURL)
 
@@ -567,13 +580,15 @@ struct PierreDiffWebView: NSViewRepresentable {
             || context.coordinator.lastReviewThreadSignature != reviewThreadSignature
             || context.coordinator.lastFileName != fileName
             || context.coordinator.lastIsReviewMode != isReviewMode
-            || context.coordinator.lastThemeType != theme.pierreThemeType {
+            || context.coordinator.lastThemeType != theme.pierreThemeType
+            || context.coordinator.lastSelectedDraftCommentID != selectedDraftCommentID {
             context.coordinator.lastDiffText = diffText
             context.coordinator.lastDraftSignature = draftSignature
             context.coordinator.lastReviewThreadSignature = reviewThreadSignature
             context.coordinator.lastFileName = fileName
             context.coordinator.lastIsReviewMode = isReviewMode
             context.coordinator.lastThemeType = theme.pierreThemeType
+            context.coordinator.lastSelectedDraftCommentID = selectedDraftCommentID
             guard let baseURL = PierreLocalResources.baseURL else {
                 webView.loadHTMLString(
                     PierreLocalResources.errorHTML(message: PierreLocalResources.missingMessage, theme: theme),
@@ -586,7 +601,8 @@ struct PierreDiffWebView: NSViewRepresentable {
                 fileContent: fileContent,
                 theme: theme,
                 reviewThread: reviewThread, isReviewMode: isReviewMode,
-                draftComments: draftComments
+                draftComments: draftComments,
+                selectedDraftCommentID: selectedDraftCommentID
             )
             webView.loadHTMLString(html, baseURL: baseURL)
         }
@@ -628,6 +644,7 @@ struct PierreDiffWebView: NSViewRepresentable {
         var onResolveThread: (_ threadID: String, _ resolve: Bool) -> Void
         var onStartReview: (_ startLine: Int, _ endLine: Int, _ side: String, _ body: String) -> Void
         var onDeleteDraft: (_ commentID: String) -> Void
+        var onUpdateDraft: (_ commentID: String, _ body: String) -> Void
         weak var webView: WKWebView?
         var lastDiffText: String?
         var lastDraftSignature: String = ""
@@ -635,6 +652,7 @@ struct PierreDiffWebView: NSViewRepresentable {
         var lastFileName: String = ""
         var lastIsReviewMode = false
         var lastThemeType = "dark"
+        var lastSelectedDraftCommentID: String?
 
         init(
             onLinesSelected: @escaping (_ startLine: Int, _ endLine: Int, _ side: String) -> Void,
@@ -642,7 +660,8 @@ struct PierreDiffWebView: NSViewRepresentable {
             onReplyToThread: @escaping (_ threadID: String, _ body: String) -> Void,
             onResolveThread: @escaping (_ threadID: String, _ resolve: Bool) -> Void,
             onStartReview: @escaping (_ startLine: Int, _ endLine: Int, _ side: String, _ body: String) -> Void,
-            onDeleteDraft: @escaping (_ commentID: String) -> Void
+            onDeleteDraft: @escaping (_ commentID: String) -> Void,
+            onUpdateDraft: @escaping (_ commentID: String, _ body: String) -> Void
         ) {
             self.onLinesSelected = onLinesSelected
             self.onAddThreadToChat = onAddThreadToChat
@@ -650,6 +669,7 @@ struct PierreDiffWebView: NSViewRepresentable {
             self.onResolveThread = onResolveThread
             self.onStartReview = onStartReview
             self.onDeleteDraft = onDeleteDraft
+            self.onUpdateDraft = onUpdateDraft
         }
 
         func userContentController(
@@ -704,6 +724,16 @@ struct PierreDiffWebView: NSViewRepresentable {
                 return
             }
 
+            if message.name == "updateDraft",
+               let body = message.body as? [String: Any],
+               let commentID = body["commentID"] as? String,
+               let commentBody = body["body"] as? String {
+                DispatchQueue.main.async { [weak self] in
+                    self?.onUpdateDraft(commentID, commentBody)
+                }
+                return
+            }
+
             guard message.name == "lineSelection",
                   let body = message.body as? [String: Any],
                   let startLine = body["startLine"] as? Int,
@@ -724,7 +754,8 @@ struct PierreDiffWebView: NSViewRepresentable {
         theme: TerminalCodeTheme,
         reviewThread: TerminalPullRequestReviewThread?,
         isReviewMode: Bool,
-        draftComments: [TerminalLocalReviewComment]
+        draftComments: [TerminalLocalReviewComment],
+        selectedDraftCommentID: String?
     ) -> String {
         let escapedDiff = diffText
             .replacingOccurrences(of: "\\", with: "\\\\")
@@ -790,6 +821,7 @@ struct PierreDiffWebView: NSViewRepresentable {
 
         let annotationsJS = "const annotations = [\(annotationItems.joined(separator: ",\n"))];";
         let isReviewModeJS = isReviewMode ? "true" : "false"
+        let selectedDraftCommentIDJS = selectedDraftCommentID.map { "'\(Self.escapeJS($0))'" } ?? "null"
         let themeType = theme.pierreThemeType
         let backgroundHex = theme.shellBackgroundHex
         let foregroundHex = theme.shellForegroundHex
@@ -848,6 +880,7 @@ struct PierreDiffWebView: NSViewRepresentable {
             const patchText = `\(escapedDiff)`;
             const parsedPatches = parsePatchFiles(patchText, '\(lang)');
             const isReviewMode = \(isReviewModeJS);
+            const selectedDraftCommentID = \(selectedDraftCommentIDJS);
 
             // Populate full file lines for incremental expansion
             \(escapedFileContent != nil ? "const fullFileContent = `\(escapedFileContent!)`;" : "const fullFileContent = null;")
@@ -951,6 +984,10 @@ struct PierreDiffWebView: NSViewRepresentable {
                 // Draft comment annotation
                 if (m.type === 'draft') {
                     const wrapper = document.createElement('div');
+                    wrapper.id = 'draft-annotation-' + m.commentID;
+                    if (selectedDraftCommentID && m.commentID === selectedDraftCommentID) {
+                        annotationElement = wrapper;
+                    }
                     wrapper.style.cssText = 'padding: 10px 16px; background: #1a2332; border-left: 3px solid #238636; margin: 4px 0; font-family: -apple-system, BlinkMacSystemFont, sans-serif;';
 
                     const header = document.createElement('div');
@@ -972,6 +1009,10 @@ struct PierreDiffWebView: NSViewRepresentable {
                     spacer.style.cssText = 'flex: 1;';
                     header.appendChild(spacer);
 
+                    const editBtn = document.createElement('button');
+                    editBtn.textContent = 'Edit';
+                    editBtn.style.cssText = 'font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid #1d4ed8; background: transparent; color: #60a5fa; cursor: pointer; font-family: inherit;';
+
                     const deleteBtn = document.createElement('button');
                     deleteBtn.textContent = 'Delete';
                     deleteBtn.style.cssText = 'font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid #6b2126; background: transparent; color: #f85149; cursor: pointer; font-family: inherit;';
@@ -980,6 +1021,8 @@ struct PierreDiffWebView: NSViewRepresentable {
                         window.webkit.messageHandlers.deleteDraft.postMessage({ commentID: m.commentID });
                     });
                     deleteBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+                    editBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+                    header.appendChild(editBtn);
                     header.appendChild(deleteBtn);
 
                     wrapper.appendChild(header);
@@ -988,6 +1031,72 @@ struct PierreDiffWebView: NSViewRepresentable {
                     body.style.cssText = 'font-size: 13px; color: #cbd5e1; line-height: 1.5; white-space: pre-wrap;';
                     body.textContent = m.body;
                     wrapper.appendChild(body);
+
+                    const editArea = document.createElement('div');
+                    editArea.style.cssText = 'display: none; margin-top: 8px;';
+
+                    const textarea = document.createElement('textarea');
+                    textarea.value = m.body;
+                    textarea.style.cssText = 'width: 100%; min-height: 60px; max-height: 120px; padding: 8px; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: #e2e8f0; font-size: 13px; font-family: inherit; resize: vertical;';
+                    textarea.addEventListener('pointerdown', (e) => e.stopPropagation());
+                    textarea.addEventListener('keydown', (e) => e.stopPropagation());
+                    editArea.appendChild(textarea);
+
+                    const actionRow = document.createElement('div');
+                    actionRow.style.cssText = 'display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px;';
+
+                    const cancelEditBtn = document.createElement('button');
+                    cancelEditBtn.textContent = 'Cancel';
+                    cancelEditBtn.style.cssText = 'font-size: 11px; padding: 4px 10px; border-radius: 4px; border: 1px solid #475569; background: #334155; color: #e2e8f0; cursor: pointer; font-family: inherit;';
+                    cancelEditBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        textarea.value = m.body;
+                        editArea.style.display = 'none';
+                        body.style.display = '';
+                        editBtn.textContent = 'Edit';
+                    });
+                    cancelEditBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+                    actionRow.appendChild(cancelEditBtn);
+
+                    const saveEditBtn = document.createElement('button');
+                    saveEditBtn.textContent = 'Save';
+                    saveEditBtn.style.cssText = 'font-size: 11px; padding: 4px 10px; border-radius: 4px; border: none; background: #238636; color: white; cursor: pointer; font-family: inherit; font-weight: 600;';
+                    saveEditBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        const updated = textarea.value.trim();
+                        if (!updated) return;
+                        m.body = updated;
+                        body.textContent = updated;
+                        editArea.style.display = 'none';
+                        body.style.display = '';
+                        editBtn.textContent = 'Edit';
+                        window.webkit.messageHandlers.updateDraft.postMessage({
+                            commentID: m.commentID,
+                            body: updated
+                        });
+                    });
+                    saveEditBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+                    actionRow.appendChild(saveEditBtn);
+
+                    editArea.appendChild(actionRow);
+                    wrapper.appendChild(editArea);
+
+                    editBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        const editing = editArea.style.display !== 'none';
+                        if (editing) {
+                            textarea.value = m.body;
+                            editArea.style.display = 'none';
+                            body.style.display = '';
+                            editBtn.textContent = 'Edit';
+                        } else {
+                            textarea.value = m.body;
+                            editArea.style.display = '';
+                            body.style.display = 'none';
+                            editBtn.textContent = 'Close';
+                            setTimeout(() => textarea.focus(), 30);
+                        }
+                    });
 
                     return wrapper;
                 }

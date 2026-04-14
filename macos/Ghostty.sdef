@@ -34,6 +34,9 @@
       <responds-to command="open plan review">
         <cocoa method="handleOpenPlanReviewScriptCommand:"/>
       </responds-to>
+      <responds-to command="import review comments">
+        <cocoa method="handleImportReviewCommentsScriptCommand:"/>
+      </responds-to>
 
       <element type="window" access="r">
         <cocoa key="scriptWindows"/>
@@ -258,6 +261,16 @@
       </parameter>
       <parameter name="agent id" code="GPrA" type="text" description="Claude agent identifier for the review.">
         <cocoa key="agentID"/>
+      </parameter>
+      <parameter name="on" code="GonT" type="terminal" description="Target terminal.">
+        <cocoa key="on"/>
+      </parameter>
+    </command>
+
+    <command name="import review comments" code="GhstIRCm" description="Import structured review comments into a terminal tab.">
+      <direct-parameter type="text" description="JSON payload containing comments or issues to import."/>
+      <parameter name="replace existing" code="GIrR" type="boolean" optional="yes" description="Clear existing imported comments before adding new ones. Default: true.">
+        <cocoa key="replaceExisting"/>
       </parameter>
       <parameter name="on" code="GonT" type="terminal" description="Target terminal.">
         <cocoa key="on"/>

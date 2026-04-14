@@ -307,6 +307,154 @@ struct TerminalTabStateTests {
         tab.clearExpiredPermissionRequest(now: Date(timeIntervalSince1970: 16))
         #expect(tab.pendingPermissionRequest == nil)
     }
+
+    @Test
+    func updateReviewCommentReplacesTrimmedBody() {
+        let tab = TerminalTabState()
+        let comment = TerminalLocalReviewComment(
+            id: UUID(),
+            filePath: "Sources/App.swift",
+            startLine: 12,
+            endLine: 12,
+            side: "new",
+            text: "Original"
+        )
+        tab.addReviewComment(comment)
+
+        tab.updateReviewComment(id: comment.id, text: "  Updated body  ")
+
+        #expect(tab.localReviewComments.count == 1)
+        #expect(tab.localReviewComments.first?.text == "Updated body")
+
+        tab.updateReviewComment(id: comment.id, text: "   ")
+        #expect(tab.localReviewComments.first?.text == "Updated body")
+    }
+
+    @Test
+    func clearReviewCommentsClearsSelectedReviewComment() {
+        let tab = TerminalTabState()
+        let comment = TerminalLocalReviewComment(
+            id: UUID(),
+            filePath: "Sources/App.swift",
+            startLine: 40,
+            endLine: 40,
+            side: "new",
+            text: "Needs guard"
+        )
+        tab.addReviewComment(comment)
+        tab.selectedReviewCommentID = comment.id
+
+        tab.clearReviewComments()
+
+        #expect(tab.localReviewComments.isEmpty)
+        #expect(tab.selectedReviewCommentID == nil)
+    }
+
+    @Test
+    func externalReviewCommentsParserParsesCommentsPayload() throws {
+        let payload = """
+        {
+          "replaceExisting": false,
+          "comments": [
+            {
+              "path": "macos/Sources/Features/Terminal/TerminalController.swift",
+              "line_start": 100,
+              "line_end": 101,
+              "side": "left",
+              "text": "Can we avoid opening diff when path is missing?"
+            }
+          ]
+        }
+        """
+
+        let parsed = try TerminalExternalReviewCommentsParser.parse(
+            payloadJSON: payload,
+            defaultReplaceExisting: true
+        )
+
+        #expect(parsed.replaceExisting == false)
+        #expect(parsed.comments.count == 1)
+        #expect(parsed.comments.first?.filePath == "macos/Sources/Features/Terminal/TerminalController.swift")
+        #expect(parsed.comments.first?.startLine == 100)
+        #expect(parsed.comments.first?.endLine == 101)
+        #expect(parsed.comments.first?.side == "old")
+    }
+
+    @Test
+    func externalReviewCommentsParserParsesIssuesPayload() throws {
+        let payload = """
+        {
+          "issues": [
+            {
+              "severity": "high",
+              "category": "functional-bug",
+              "title": "Thread can be nil",
+              "description": "This branch dereferences thread without checking.",
+              "file": "macos/Sources/Features/Terminal/TerminalDiffView.swift",
+              "line_start": 398,
+              "line_end": 403,
+              "suggested_fix": "Guard and return when thread is nil.",
+              "confidence": 8
+            }
+          ]
+        }
+        """
+
+        let parsed = try TerminalExternalReviewCommentsParser.parse(
+            payloadJSON: payload,
+            defaultReplaceExisting: true
+        )
+
+        #expect(parsed.replaceExisting == true)
+        #expect(parsed.comments.count == 1)
+        #expect(parsed.comments.first?.filePath == "macos/Sources/Features/Terminal/TerminalDiffView.swift")
+        #expect(parsed.comments.first?.startLine == 398)
+        #expect(parsed.comments.first?.endLine == 403)
+        #expect(parsed.comments.first?.text.contains("Thread can be nil") == true)
+        #expect(parsed.comments.first?.text.contains("Suggested fix: Guard and return when thread is nil.") == true)
+    }
+
+    @Test
+    func externalReviewCommentsParserAppliesLineDefaults() throws {
+        let payload = """
+        {
+          "comments": [
+            {
+              "path": "macos/Sources/Features/Terminal/TerminalSidebarView.swift",
+              "text": "Can we reuse this helper?"
+            }
+          ]
+        }
+        """
+
+        let parsed = try TerminalExternalReviewCommentsParser.parse(
+            payloadJSON: payload,
+            defaultReplaceExisting: true
+        )
+
+        #expect(parsed.replaceExisting == true)
+        #expect(parsed.comments.count == 1)
+        #expect(parsed.comments.first?.startLine == 1)
+        #expect(parsed.comments.first?.endLine == 1)
+        #expect(parsed.comments.first?.side == "new")
+    }
+
+    @Test
+    func externalReviewCommentsParserRejectsUnsupportedPayload() {
+        let payload = #"{"foo":"bar"}"#
+
+        do {
+            _ = try TerminalExternalReviewCommentsParser.parse(
+                payloadJSON: payload,
+                defaultReplaceExisting: true
+            )
+            Issue.record("Expected parser to reject unsupported payload.")
+        } catch let error as TerminalExternalReviewCommentsParserError {
+            #expect(error == .unsupportedPayload)
+        } catch {
+            Issue.record("Unexpected error type: \(error)")
+        }
+    }
 }
 
 private func makeThread(

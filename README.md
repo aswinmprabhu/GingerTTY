@@ -137,6 +137,35 @@ tell application "GingerTTY" to open plan review "/tmp/plan.md" ¬
 
 The reviewer can approve the plan or request changes with inline comments. The decision is written as JSON to the response path.
 
+### `import review comments`
+
+Imports structured review comments from external tools into GingerTTY's local/draft review comment list for the target terminal tab.
+
+```applescript
+set payload to "{\"comments\":[{\"path\":\"macos/Sources/Features/Terminal/TerminalController.swift\",\"line_start\":956,\"line_end\":970,\"side\":\"new\",\"text\":\"Can we guard this path earlier to avoid opening an empty diff?\"}],\"replaceExisting\":true}"
+
+tell application "GingerTTY" to import review comments payload ¬
+    replace existing true ¬
+    on terminal id "TERMINAL-UUID"
+```
+
+Behavior:
+- In **review mode**, imported comments become pending draft review comments.
+- In **non-review mode**, imported comments become local review comments (with `Fix in chat` support).
+
+Supported payload shapes:
+- `{ "comments": [...] }`
+- `{ "issues": [...] }` (for review tools that emit issue objects)
+- `{ "findings": [...] }`
+- `[...]` (array of comment/issue-like objects)
+
+Common fields:
+- **path/file/filePath** — repository-relative file path
+- **line_start/lineStart/line** and **line_end/lineEnd** — line range
+- **side** — `new`/`right` or `old`/`left`
+- **text/body/comment** — comment body
+- **replaceExisting** (optional) — whether to clear existing local/draft comments before import (default: `true`)
+
 ## Ghostty
 
 GingerTTY is built on top of Ghostty. For documentation on terminal features, configuration, keybindings, themes, and more, see:

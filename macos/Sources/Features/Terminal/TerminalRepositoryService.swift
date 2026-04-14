@@ -510,6 +510,287 @@ struct TerminalLocalReviewComment: Identifiable, Equatable {
     let text: String
 }
 
+enum TerminalExternalReviewCommentsParserError: LocalizedError, Equatable {
+    case invalidJSON
+    case unsupportedPayload
+    case emptyComments
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidJSON:
+            return "Review comments payload is not valid JSON."
+        case .unsupportedPayload:
+            return "Review comments payload must include `comments`, `issues`, or `findings`."
+        case .emptyComments:
+            return "No importable review comments were found in the payload."
+        }
+    }
+}
+
+struct TerminalExternalReviewCommentInput: Equatable {
+    let filePath: String
+    let startLine: Int
+    let endLine: Int
+    let side: String
+    let text: String
+}
+
+struct TerminalExternalReviewCommentsImport: Equatable {
+    let comments: [TerminalExternalReviewCommentInput]
+    let replaceExisting: Bool
+}
+
+enum TerminalExternalReviewCommentsParser {
+    static func parse(
+        payloadJSON: String,
+        defaultReplaceExisting: Bool
+    ) throws -> TerminalExternalReviewCommentsImport {
+        guard let data = payloadJSON.data(using: .utf8) else {
+            throw TerminalExternalReviewCommentsParserError.invalidJSON
+        }
+
+        let jsonObject: Any
+        do {
+            jsonObject = try JSONSerialization.jsonObject(with: data)
+        } catch {
+            throw TerminalExternalReviewCommentsParserError.invalidJSON
+        }
+
+        let extracted = try extractEntries(
+            from: jsonObject,
+            defaultReplaceExisting: defaultReplaceExisting
+        )
+        let parsedComments = extracted.entries.compactMap(parseComment(from:))
+        let dedupedComments = dedupe(parsedComments)
+        guard !dedupedComments.isEmpty else {
+            throw TerminalExternalReviewCommentsParserError.emptyComments
+        }
+
+        return TerminalExternalReviewCommentsImport(
+            comments: dedupedComments,
+            replaceExisting: extracted.replaceExisting
+        )
+    }
+
+    private static func extractEntries(
+        from object: Any,
+        defaultReplaceExisting: Bool
+    ) throws -> (entries: [[String: Any]], replaceExisting: Bool) {
+        var replaceExisting = defaultReplaceExisting
+        var entries: [[String: Any]] = []
+
+        switch object {
+        case let payload as [String: Any]:
+            if let value = boolValue(in: payload, keys: ["replaceExisting", "replace_existing"]) {
+                replaceExisting = value
+            }
+
+            if let comments = payload["comments"] as? [Any] {
+                entries.append(contentsOf: comments.compactMap { $0 as? [String: Any] })
+            }
+            if let issues = payload["issues"] as? [Any] {
+                entries.append(contentsOf: issues.compactMap { $0 as? [String: Any] })
+            }
+            if let findings = payload["findings"] as? [Any] {
+                entries.append(contentsOf: findings.compactMap { $0 as? [String: Any] })
+            }
+            if entries.isEmpty, isCommentLikeDictionary(payload) {
+                entries = [payload]
+            }
+
+        case let payloadArray as [Any]:
+            entries = payloadArray.compactMap { $0 as? [String: Any] }
+
+        default:
+            throw TerminalExternalReviewCommentsParserError.unsupportedPayload
+        }
+
+        guard !entries.isEmpty else {
+            throw TerminalExternalReviewCommentsParserError.unsupportedPayload
+        }
+
+        return (entries, replaceExisting)
+    }
+
+    private static func parseComment(from entry: [String: Any]) -> TerminalExternalReviewCommentInput? {
+        guard let filePath = stringValue(
+            in: entry,
+            keys: ["filePath", "file_path", "path", "file"]
+        )?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !filePath.isEmpty else {
+            return nil
+        }
+
+        let startLine = max(
+            1,
+            intValue(in: entry, keys: ["line_start", "lineStart", "start_line", "startLine", "line"]) ?? 1
+        )
+        let endLine = max(
+            startLine,
+            intValue(in: entry, keys: ["line_end", "lineEnd", "end_line", "endLine"]) ?? startLine
+        )
+        let side = normalizeSide(
+            stringValue(in: entry, keys: ["side", "diffSide", "diff_side"]) ?? "new"
+        )
+        guard let text = renderedCommentText(from: entry)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else {
+            return nil
+        }
+
+        return TerminalExternalReviewCommentInput(
+            filePath: filePath,
+            startLine: startLine,
+            endLine: endLine,
+            side: side,
+            text: text
+        )
+    }
+
+    private static func renderedCommentText(from entry: [String: Any]) -> String? {
+        if let directText = stringValue(in: entry, keys: ["text", "body", "comment"]),
+           !directText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return directText
+        }
+
+        let title = stringValue(in: entry, keys: ["title"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let description = stringValue(in: entry, keys: ["description"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let reasoning = stringValue(in: entry, keys: ["reasoning"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let suggestedFix = stringValue(in: entry, keys: ["suggested_fix", "suggestedFix"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let severity = stringValue(in: entry, keys: ["severity"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let category = stringValue(in: entry, keys: ["category"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let confidence = intValue(in: entry, keys: ["confidence"])
+
+        var parts: [String] = []
+        if !title.isEmpty && !description.isEmpty {
+            parts.append("\(title): \(description)")
+        } else if !description.isEmpty {
+            parts.append(description)
+        } else if !title.isEmpty {
+            parts.append(title)
+        }
+        if !reasoning.isEmpty {
+            parts.append("Reasoning: \(reasoning)")
+        }
+        if !suggestedFix.isEmpty {
+            parts.append("Suggested fix: \(suggestedFix)")
+        }
+        guard !parts.isEmpty else { return nil }
+
+        var prefixParts: [String] = []
+        if !severity.isEmpty {
+            prefixParts.append(severity.uppercased())
+        }
+        if !category.isEmpty {
+            prefixParts.append(category)
+        }
+        if let confidence {
+            prefixParts.append("confidence \(confidence)/10")
+        }
+        if !prefixParts.isEmpty {
+            parts[0] = "[\(prefixParts.joined(separator: " • "))] \(parts[0])"
+        }
+
+        return parts.joined(separator: "\n\n")
+    }
+
+    private static func normalizeSide(_ value: String) -> String {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized == "old" || normalized == "left" || normalized == "deletions" {
+            return "old"
+        }
+        return "new"
+    }
+
+    private static func dedupe(
+        _ comments: [TerminalExternalReviewCommentInput]
+    ) -> [TerminalExternalReviewCommentInput] {
+        var seen = Set<String>()
+        var deduped: [TerminalExternalReviewCommentInput] = []
+        for comment in comments {
+            let key = [
+                comment.filePath,
+                "\(comment.startLine)",
+                "\(comment.endLine)",
+                comment.side,
+                comment.text,
+            ].joined(separator: "|")
+            if seen.insert(key).inserted {
+                deduped.append(comment)
+            }
+        }
+        return deduped
+    }
+
+    private static func isCommentLikeDictionary(_ value: [String: Any]) -> Bool {
+        let hasPath = stringValue(in: value, keys: ["filePath", "file_path", "path", "file"]) != nil
+        let hasText = stringValue(
+            in: value,
+            keys: ["text", "body", "comment", "description", "title"]
+        ) != nil
+        return hasPath && hasText
+    }
+
+    private static func stringValue(
+        in value: [String: Any],
+        keys: [String]
+    ) -> String? {
+        for key in keys {
+            guard let rawValue = value[key] else { continue }
+            if let stringValue = rawValue as? String {
+                return stringValue
+            }
+        }
+        return nil
+    }
+
+    private static func intValue(
+        in value: [String: Any],
+        keys: [String]
+    ) -> Int? {
+        for key in keys {
+            guard let rawValue = value[key] else { continue }
+            if let intValue = rawValue as? Int {
+                return intValue
+            }
+            if let numberValue = rawValue as? NSNumber {
+                return numberValue.intValue
+            }
+            if let stringValue = rawValue as? String,
+               let intValue = Int(stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                return intValue
+            }
+        }
+        return nil
+    }
+
+    private static func boolValue(
+        in value: [String: Any],
+        keys: [String]
+    ) -> Bool? {
+        for key in keys {
+            guard let rawValue = value[key] else { continue }
+            if let boolValue = rawValue as? Bool {
+                return boolValue
+            }
+            if let numberValue = rawValue as? NSNumber {
+                return numberValue.boolValue
+            }
+            if let stringValue = rawValue as? String {
+                switch stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+                case "true", "1", "yes":
+                    return true
+                case "false", "0", "no":
+                    return false
+                default:
+                    continue
+                }
+            }
+        }
+        return nil
+    }
+}
+
 struct TerminalRepositoryChangeSection: Equatable, Codable {
     let title: String
     let files: [TerminalRepositoryChangeFile]

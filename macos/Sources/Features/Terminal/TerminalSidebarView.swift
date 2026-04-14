@@ -418,11 +418,11 @@ private struct ChangesInspectorView: View {
             }
 
             if !tab.localReviewComments.isEmpty {
-                if tab.isReviewMode {
-                    ReviewCommentsPreview(tab: tab)
-                } else {
-                    ReviewCommentsUberBox(controller: controller, tab: tab)
-                }
+                ReviewCommentsPreview(
+                    controller: controller,
+                    tab: tab,
+                    showsFixInChat: !tab.isReviewMode
+                )
             }
 
             if let summary = tab.changeSummary {
@@ -1096,7 +1096,10 @@ private struct PRDescriptionView: View {
 }
 
 private struct ReviewCommentsPreview: View {
+    @ObservedObject var controller: TerminalController
     @ObservedObject var tab: TerminalTabState
+    let showsFixInChat: Bool
+    @State private var fixInChatError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1117,6 +1120,7 @@ private struct ReviewCommentsPreview: View {
 
                 Button {
                     tab.clearReviewComments()
+                    fixInChatError = nil
                 } label: {
                     Image(systemName: "trash")
                         .font(.caption)
@@ -1125,21 +1129,35 @@ private struct ReviewCommentsPreview: View {
                 .foregroundStyle(.red)
             }
 
-            ForEach(tab.localReviewComments) { comment in
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("\(URL(fileURLWithPath: comment.filePath).lastPathComponent):\(comment.startLine == comment.endLine ? "L\(comment.startLine)" : "L\(comment.startLine)-L\(comment.endLine)")")
-                        .font(.caption.monospaced().weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Text(comment.text)
-                        .font(.caption)
-                        .lineLimit(3)
+            if showsFixInChat {
+                Button {
+                    fixInChatError = controller.sendReviewCommentsToChat()
+                } label: {
+                    Label("Fix in chat", systemImage: "paperplane")
+                        .font(.caption.weight(.semibold))
+                        .frame(maxWidth: .infinity)
                 }
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color(nsColor: .textBackgroundColor))
-                )
+                .buttonStyle(.borderedProminent)
+                .disabled(tab.localReviewComments.isEmpty)
+
+                if let fixInChatError {
+                    Text(fixInChatError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            ForEach(tab.localReviewComments) { comment in
+                PendingReviewCommentCard(
+                    comment: comment
+                ) { updatedText in
+                    tab.updateReviewComment(id: comment.id, text: updatedText)
+                } onOpenInDiff: {
+                    controller.openPendingReviewComment(comment)
+                } onDelete: {
+                    tab.removeReviewComment(id: comment.id)
+                }
             }
         }
         .padding(12)
@@ -1147,6 +1165,124 @@ private struct ReviewCommentsPreview: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))
         )
+    }
+}
+
+private struct PendingReviewCommentCard: View {
+    let comment: TerminalLocalReviewComment
+    let onSave: (_ newText: String) -> Void
+    let onOpenInDiff: () -> Void
+    let onDelete: () -> Void
+
+    @State private var isEditing = false
+    @State private var editedText = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Button(action: onOpenInDiff) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "doc.text")
+                            .font(.caption)
+                        Text(locationLabel)
+                            .font(.caption.monospaced().weight(.semibold))
+                    }
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Open this draft comment in diff")
+
+                Spacer()
+
+                if isEditing {
+                    Button("Cancel") {
+                        editedText = comment.text
+                        isEditing = false
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+
+                    Button("Save") {
+                        onSave(editedText)
+                        isEditing = false
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .disabled(editedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                } else {
+                    Button {
+                        editedText = comment.text
+                        isEditing = true
+                    } label: {
+                        Image(systemName: "pencil")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Edit draft comment")
+                }
+
+                Button {
+                    onDelete()
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.red)
+                .help("Delete draft comment")
+            }
+
+            if isEditing {
+                TextEditor(text: $editedText)
+                    .font(.caption)
+                    .frame(minHeight: 60, maxHeight: 120)
+                    .scrollContentBackground(.hidden)
+                    .padding(6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color(nsColor: .textBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                    )
+            } else {
+                Button(action: onOpenInDiff) {
+                    Text(comment.text)
+                        .font(.caption)
+                        .lineLimit(4)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.primary)
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color(nsColor: .textBackgroundColor))
+        )
+        .onAppear {
+            editedText = comment.text
+        }
+        .onChange(of: comment.text) { newValue in
+            if !isEditing {
+                editedText = newValue
+            }
+        }
+    }
+
+    private var locationLabel: String {
+        let fileName = URL(fileURLWithPath: comment.filePath).lastPathComponent
+        let lineLabel: String
+        if comment.startLine == comment.endLine {
+            lineLabel = "L\(comment.startLine)"
+        } else {
+            lineLabel = "L\(comment.startLine)-L\(comment.endLine)"
+        }
+        return "\(fileName):\(lineLabel)"
     }
 }
 

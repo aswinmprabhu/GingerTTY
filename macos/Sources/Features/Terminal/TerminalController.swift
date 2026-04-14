@@ -997,6 +997,101 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         }
     }
 
+    private func openDiffForDraftComment(_ comment: TerminalLocalReviewComment) {
+        let file = TerminalRepositoryChangeFile(
+            id: "draft-\(comment.id.uuidString)",
+            path: comment.filePath,
+            additions: 0,
+            deletions: 0,
+            isBinary: false,
+            badges: [],
+            sectionTitle: tabState.pullRequestSummary == nil ? "Uncommitted" : "Committed"
+        )
+
+        tabState.activeReviewThread = nil
+        openDiffForFile(file)
+    }
+
+    func openPendingReviewComment(_ comment: TerminalLocalReviewComment) {
+        openDiffForDraftComment(comment)
+        tabState.selectedReviewCommentID = comment.id
+    }
+
+    func importExternalReviewComments(
+        payloadJSON: String,
+        replaceExisting: Bool
+    ) throws {
+        let parsed = try TerminalExternalReviewCommentsParser.parse(
+            payloadJSON: payloadJSON,
+            defaultReplaceExisting: replaceExisting
+        )
+        let normalizedComments: [TerminalLocalReviewComment] = parsed.comments.compactMap { comment -> TerminalLocalReviewComment? in
+            guard let normalizedPath = normalizeImportedReviewCommentPath(
+                comment.filePath,
+                repositoryRoot: tabState.repositoryRoot
+            ) else {
+                return nil
+            }
+
+            return TerminalLocalReviewComment(
+                id: UUID(),
+                filePath: normalizedPath,
+                startLine: comment.startLine,
+                endLine: comment.endLine,
+                side: comment.side,
+                text: comment.text
+            )
+        }
+        guard !normalizedComments.isEmpty else {
+            throw TerminalExternalReviewCommentsParserError.emptyComments
+        }
+
+        if parsed.replaceExisting {
+            tabState.clearReviewComments()
+        }
+        normalizedComments.forEach { tabState.addReviewComment($0) }
+
+        if let firstComment = normalizedComments.first {
+            openPendingReviewComment(firstComment)
+        }
+        tabState.setRightSidebarSelection(.changes)
+        tabState.setRightSidebarCollapsed(false)
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        markTabGroupChanged()
+    }
+
+    private func normalizeImportedReviewCommentPath(
+        _ rawPath: String,
+        repositoryRoot: String?
+    ) -> String? {
+        let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let expandedPath = NSString(string: trimmed).expandingTildeInPath
+        var normalizedPath = expandedPath.replacingOccurrences(of: "\\", with: "/")
+        while normalizedPath.hasPrefix("./") {
+            normalizedPath.removeFirst(2)
+        }
+
+        guard let repositoryRoot else {
+            return normalizedPath.isEmpty ? nil : normalizedPath
+        }
+
+        let repositoryURL = URL(fileURLWithPath: repositoryRoot).standardizedFileURL
+        if normalizedPath.hasPrefix("/") {
+            let absoluteURL = URL(fileURLWithPath: normalizedPath).standardizedFileURL
+            let repositoryPath = repositoryURL.path
+            let absolutePath = absoluteURL.path
+            guard absolutePath.hasPrefix(repositoryPath + "/") else {
+                return nil
+            }
+            return String(absolutePath.dropFirst(repositoryPath.count + 1))
+        }
+
+        return normalizedPath.isEmpty ? nil : normalizedPath
+    }
+
     func addThreadToChat(_ thread: TerminalPullRequestReviewThread) {
         let comment = TerminalLocalReviewComment(
             id: UUID(),

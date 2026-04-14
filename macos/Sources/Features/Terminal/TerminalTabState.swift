@@ -82,6 +82,7 @@ final class TerminalTabState: ObservableObject, Identifiable {
     @Published var localReviewComments: [TerminalLocalReviewComment] = []
     @Published var prThreadReviewComments: [TerminalLocalReviewComment] = []
     @Published var activeReviewThread: TerminalPullRequestReviewThread?
+    @Published var selectedReviewCommentID: UUID?
 
     // MARK: PR review mode
 
@@ -243,6 +244,7 @@ final class TerminalTabState: ObservableObject, Identifiable {
         clearReviewComments()
         clearPRThreadComments()
         activeReviewThread = nil
+        selectedReviewCommentID = nil
         reviewBodyText = ""
         reviewSubmitError = nil
         mergeInProgress = false
@@ -380,6 +382,7 @@ final class TerminalTabState: ObservableObject, Identifiable {
         diffRawText = nil
         diffFileContent = nil
         isDiffLoading = true
+        selectedReviewCommentID = nil
         combinedDiffTitle = nil
         combinedDiffRawText = nil
         isCombinedDiffLoading = false
@@ -417,6 +420,7 @@ final class TerminalTabState: ObservableObject, Identifiable {
         pendingSelectionEnd = nil
         pendingSelectionSide = nil
         activeReviewThread = nil
+        selectedReviewCommentID = nil
     }
 
     // MARK: File viewer
@@ -542,10 +546,32 @@ final class TerminalTabState: ObservableObject, Identifiable {
 
     func removeReviewComment(id: UUID) {
         localReviewComments.removeAll { $0.id == id }
+        if selectedReviewCommentID == id {
+            selectedReviewCommentID = nil
+        }
+    }
+
+    func updateReviewComment(id: UUID, text: String) {
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty,
+              let index = localReviewComments.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        let existing = localReviewComments[index]
+        localReviewComments[index] = TerminalLocalReviewComment(
+            id: existing.id,
+            filePath: existing.filePath,
+            startLine: existing.startLine,
+            endLine: existing.endLine,
+            side: existing.side,
+            text: trimmedText
+        )
     }
 
     func clearReviewComments() {
         localReviewComments.removeAll()
+        selectedReviewCommentID = nil
     }
 
     func addPRThreadComment(_ comment: TerminalLocalReviewComment) {

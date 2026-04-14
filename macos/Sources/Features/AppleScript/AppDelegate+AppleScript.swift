@@ -390,6 +390,60 @@ extension NSApplication {
         )
     }
 
+    /// Handler for the `import review comments` AppleScript command.
+    ///
+    /// Required selector name from the command in `sdef`:
+    /// `handleImportReviewCommentsScriptCommand:`.
+    @objc(handleImportReviewCommentsScriptCommand:)
+    func handleImportReviewCommentsScriptCommand(_ command: NSScriptCommand) {
+        guard validateScript(command: command) else { return }
+
+        guard let payloadJSON = command.directParameter as? String,
+              !payloadJSON.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            command.scriptErrorNumber = errAEParamMissed
+            command.scriptErrorString = "Missing review comments payload JSON."
+            return
+        }
+
+        guard let terminal = command.evaluatedArguments?["on"] as? ScriptTerminal else {
+            command.scriptErrorNumber = errAEParamMissed
+            command.scriptErrorString = "Missing terminal target."
+            return
+        }
+
+        guard let surfaceView = terminal.surfaceView,
+              let controller = surfaceView.window?.windowController as? TerminalController else {
+            command.scriptErrorNumber = errAEEventFailed
+            command.scriptErrorString = "Terminal controller is unavailable."
+            return
+        }
+
+        let replaceExisting: Bool
+        if let rawReplaceExisting = command.evaluatedArguments?["replaceExisting"] {
+            if let boolValue = rawReplaceExisting as? Bool {
+                replaceExisting = boolValue
+            } else if let numberValue = rawReplaceExisting as? NSNumber {
+                replaceExisting = numberValue.boolValue
+            } else {
+                command.scriptErrorNumber = errAECoercionFail
+                command.scriptErrorString = "replace existing must be a boolean value."
+                return
+            }
+        } else {
+            replaceExisting = true
+        }
+
+        do {
+            try controller.importExternalReviewComments(
+                payloadJSON: payloadJSON,
+                replaceExisting: replaceExisting
+            )
+        } catch {
+            command.scriptErrorNumber = errAEEventFailed
+            command.scriptErrorString = error.localizedDescription
+        }
+    }
+
     /// Handler for the `new tab` AppleScript command.
     ///
     /// Required selector name from the command in `sdef`:
