@@ -6,6 +6,8 @@ struct TerminalNativeSearchField: NSViewRepresentable {
     let placeholder: String
     var font: NSFont = .systemFont(ofSize: 13)
     var focusOnAppear = true
+    var focusToken: Int = 0
+    var selectAllOnFocus = false
     var onArrowDown: (() -> Void)? = nil
     var onArrowUp: (() -> Void)? = nil
     var onReturn: (() -> Void)? = nil
@@ -40,6 +42,17 @@ struct TerminalNativeSearchField: NSViewRepresentable {
             nsView.stringValue = text
         }
 
+        if context.coordinator.lastFocusToken != focusToken {
+            context.coordinator.lastFocusToken = focusToken
+            DispatchQueue.main.async {
+                guard let window = nsView.window else { return }
+                window.makeFirstResponder(nsView)
+                if selectAllOnFocus {
+                    nsView.selectText(nil)
+                }
+            }
+        }
+
         context.coordinator.onArrowDown = onArrowDown
         context.coordinator.onArrowUp = onArrowUp
         context.coordinator.onReturn = onReturn
@@ -68,10 +81,12 @@ struct TerminalNativeSearchField: NSViewRepresentable {
         var onShiftReturn: (() -> Void)?
         var onEscape: (() -> Void)?
         var onTextDidChange: (() -> Void)?
+        var lastFocusToken: Int
 
         init(text: Binding<String>, onTextDidChange: (() -> Void)?) {
             _text = text
             self.onTextDidChange = onTextDidChange
+            self.lastFocusToken = 0
         }
 
         func controlTextDidChange(_ notification: Notification) {

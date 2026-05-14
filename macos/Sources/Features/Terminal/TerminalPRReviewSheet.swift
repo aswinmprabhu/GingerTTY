@@ -6,6 +6,7 @@ import SwiftUI
 final class TerminalPRReviewSheetModel: ObservableObject, Identifiable {
     let id = UUID()
 
+    @Published var repositoryRoot: String
     @Published var searchText = ""
     @Published private(set) var pullRequests: [TerminalOpenPullRequest] = []
     @Published private(set) var isLoading = false
@@ -21,18 +22,17 @@ final class TerminalPRReviewSheetModel: ObservableObject, Identifiable {
     private(set) var resolvedRepositoryRoot: String?
 
     private let repositoryService: TerminalRepositoryService
-    private let repositoryRoot: String
     private let onSelect: (TerminalOpenPullRequest, String) -> Void
     private let onCancel: () -> Void
 
     init(
         repositoryService: TerminalRepositoryService,
-        repositoryRoot: String,
+        initialRepositoryRoot: String,
         onSelect: @escaping (TerminalOpenPullRequest, String) -> Void,
         onCancel: @escaping () -> Void
     ) {
         self.repositoryService = repositoryService
-        self.repositoryRoot = repositoryRoot
+        self.repositoryRoot = initialRepositoryRoot
         self.onSelect = onSelect
         self.onCancel = onCancel
 
@@ -53,12 +53,25 @@ final class TerminalPRReviewSheetModel: ObservableObject, Identifiable {
     }
 
     func loadPullRequests() async {
+        let inputRoot = repositoryRoot.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !inputRoot.isEmpty else {
+            pullRequests = []
+            selectedPRNumber = nil
+            scrollTarget = nil
+            remotes = []
+            selectedRemote = ""
+            resolvedRepositoryRoot = nil
+            errorMessage = "Repository path is required."
+            isLoading = false
+            return
+        }
+
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
 
         do {
-            let root = try await resolveGitRoot()
+            let root = try await resolveGitRoot(from: inputRoot)
             resolvedRepositoryRoot = root
 
             // Fetch remotes and pick a sensible default if not yet chosen
@@ -78,7 +91,26 @@ final class TerminalPRReviewSheetModel: ObservableObject, Identifiable {
             selectedPRNumber = firstNumber
             scrollTarget = firstNumber
         } catch {
+            pullRequests = []
+            selectedPRNumber = nil
+            scrollTarget = nil
             errorMessage = error.localizedDescription
+        }
+    }
+
+    func browseForRepository() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose Repository"
+
+        if panel.runModal() == .OK, let url = panel.url {
+            repositoryRoot = url.path
+            Task {
+                await loadPullRequests()
+            }
         }
     }
 
@@ -120,11 +152,11 @@ final class TerminalPRReviewSheetModel: ObservableObject, Identifiable {
         onCancel()
     }
 
-    private func resolveGitRoot() async throws -> String {
+    private func resolveGitRoot(from path: String) async throws -> String {
         do {
             let output = try await TerminalProcessRunner.runCommand(
                 "git",
-                arguments: ["-C", repositoryRoot, "rev-parse", "--show-toplevel"]
+                arguments: ["-C", path, "rev-parse", "--show-toplevel"]
             )
             return output.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
@@ -154,6 +186,28 @@ struct TerminalPRReviewSheet: View {
                 .keyboardShortcut(.cancelAction)
             }
             .padding(16)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Repository")
+                    .font(.headline)
+
+                HStack(spacing: 8) {
+                    TextField("Repository path", text: $model.repositoryRoot)
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityIdentifier("pr-review-repository-path")
+                    Button("Browse…") {
+                        model.browseForRepository()
+                    }
+                    .accessibilityIdentifier("pr-review-browse-repository")
+                    Button("Load") {
+                        Task { await model.loadPullRequests() }
+                    }
+                    .disabled(model.repositoryRoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isLoading)
+                    .accessibilityIdentifier("pr-review-load-repository")
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
 
             // Search field + remote picker
             HStack(spacing: 8) {

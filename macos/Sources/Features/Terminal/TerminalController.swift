@@ -892,7 +892,13 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                     preferredBaseBranch: tab.pullRequestSummary?.baseRefName
                 )
                 guard !Task.isCancelled else { return }
-                await MainActor.run { tab.setCombinedDiffText(rawDiff) }
+                let fileContents = self.combinedDiffFileContents(
+                    from: rawDiff,
+                    repositoryRoot: context.repositoryRoot
+                )
+                await MainActor.run {
+                    tab.setCombinedDiffText(rawDiff, fileContents: fileContents)
+                }
             } catch {
                 guard !Task.isCancelled else { return }
                 await MainActor.run { tab.setCombinedDiffText("") }
@@ -918,7 +924,13 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                     commitHash: commit.hash
                 )
                 guard !Task.isCancelled else { return }
-                await MainActor.run { tab.setCombinedDiffText(rawDiff) }
+                let fileContents = self.combinedDiffFileContents(
+                    from: rawDiff,
+                    repositoryRoot: root
+                )
+                await MainActor.run {
+                    tab.setCombinedDiffText(rawDiff, fileContents: fileContents)
+                }
             } catch {
                 guard !Task.isCancelled else { return }
                 await MainActor.run { tab.setCombinedDiffText("") }
@@ -929,6 +941,73 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     func closeCombinedDiff() {
         combinedDiffLoadTask?.cancel()
         tabState.closeCombinedDiff()
+    }
+
+    private func refreshAfterReviewThreadMutation(threadID: String) {
+        focusReviewThread(threadID)
+        invalidateCurrentPullRequestCache()
+        refreshPullRequest(force: true)
+    }
+
+    private func focusReviewThread(_ threadID: String) {
+        if let thread = tabState.reviewThreads.first(where: { $0.id == threadID }) {
+            tabState.activeReviewThread = thread
+        }
+    }
+
+    private func combinedDiffFileContents(
+        from rawDiff: String,
+        repositoryRoot: String
+    ) -> [String: String] {
+        let paths = Self.extractDiffPaths(from: rawDiff)
+        guard !paths.isEmpty else { return [:] }
+
+        var fileContents: [String: String] = [:]
+        for relativePath in paths {
+            let fullPath = (repositoryRoot as NSString).appendingPathComponent(relativePath)
+            guard let content = try? String(contentsOfFile: fullPath, encoding: .utf8) else {
+                continue
+            }
+            fileContents[relativePath] = content
+        }
+        return fileContents
+    }
+
+    private static func extractDiffPaths(from rawDiff: String) -> [String] {
+        var paths: [String] = []
+        var seen = Set<String>()
+
+        for line in rawDiff.split(whereSeparator: \.isNewline) {
+            guard line.hasPrefix("diff --git ") else { continue }
+            let components = String(line).split(separator: " ", omittingEmptySubsequences: true)
+            guard components.count >= 4 else { continue }
+
+            let oldPath = normalizeDiffPathToken(String(components[2]))
+            let newPath = normalizeDiffPathToken(String(components[3]))
+            let chosenPath = newPath == "/dev/null" ? oldPath : newPath
+
+            guard !chosenPath.isEmpty, chosenPath != "/dev/null" else { continue }
+            if seen.insert(chosenPath).inserted {
+                paths.append(chosenPath)
+            }
+        }
+
+        return paths
+    }
+
+    private static func normalizeDiffPathToken(_ token: String) -> String {
+        var value = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.hasPrefix("\""), value.hasSuffix("\""), value.count >= 2 {
+            value.removeFirst()
+            value.removeLast()
+            value = value.replacingOccurrences(of: "\\\"", with: "\"")
+        }
+
+        if value.hasPrefix("a/") || value.hasPrefix("b/") {
+            value.removeFirst(2)
+        }
+
+        return value
     }
 
     func presentFileCommandPalette() {
@@ -1092,7 +1171,17 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         return normalizedPath.isEmpty ? nil : normalizedPath
     }
 
-    func addThreadToChat(_ thread: TerminalPullRequestReviewThread) {
+    @discardableResult
+    func addThreadToChat(threadID: String) -> Bool {
+        guard let thread = tabState.reviewThreads.first(where: { $0.id == threadID }) else {
+            return false
+        }
+        tabState.activeReviewThread = thread
+        return addThreadToChat(thread)
+    }
+
+    @discardableResult
+    func addThreadToChat(_ thread: TerminalPullRequestReviewThread) -> Bool {
         let comment = TerminalLocalReviewComment(
             id: UUID(),
             filePath: thread.path ?? "unknown",
@@ -1101,12 +1190,27 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             side: thread.diffSide?.lowercased() == "left" ? "old" : "new",
             text: thread.comments.map { "\($0.authorLogin): \($0.body)" }.joined(separator: "\n")
         )
+
+        let isDuplicate = tabState.prThreadReviewComments.contains(where: { existing in
+            existing.filePath == comment.filePath
+                && existing.startLine == comment.startLine
+                && existing.endLine == comment.endLine
+                && existing.side == comment.side
+                && existing.text == comment.text
+        })
+        if isDuplicate {
+            return false
+        }
+
         tabState.addPRThreadComment(comment)
+        return true
     }
 
     func replyToThread(threadID: String, body: String) {
         guard let context = currentRepositoryContext(),
               let prNumber = tabState.pullRequestSummary?.number else { return }
+
+        focusReviewThread(threadID)
 
         Task { [weak self] in
             guard let self else { return }
@@ -1119,8 +1223,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                 )
                 await MainActor.run {
                     self.tabState.appendOptimisticReply(toThreadID: threadID, body: body)
-                    self.invalidateCurrentPullRequestCache()
-                    self.refreshPullRequestFromUI()
+                    self.refreshAfterReviewThreadMutation(threadID: threadID)
                 }
             } catch {
                 // Errors are silently ignored for now; the refresh will show current state
@@ -1131,6 +1234,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     func resolveThread(threadID: String, resolve: Bool) {
         guard let context = currentRepositoryContext() else { return }
 
+        focusReviewThread(threadID)
+
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -1140,9 +1245,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                     try await repositoryService.unresolveReviewThread(for: context, threadID: threadID)
                 }
                 await MainActor.run {
-                    self.tabState.setReviewThreadResolved(threadID: threadID, isResolved: resolve)
-                    self.invalidateCurrentPullRequestCache()
-                    self.refreshPullRequestFromUI()
+                    self.refreshAfterReviewThreadMutation(threadID: threadID)
                 }
             } catch {
                 // Errors are silently ignored; refresh shows current state
@@ -1225,7 +1328,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         let model = TerminalPRReviewSheetModel(
             repositoryService: repositoryService,
-            repositoryRoot: repoRoot
+            initialRepositoryRoot: repoRoot
         ) { [weak self] selectedPR, resolvedRoot in
             guard let self else { return }
             self.openPRForReview(selectedPR, repositoryRoot: resolvedRoot)

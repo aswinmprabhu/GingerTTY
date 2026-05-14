@@ -19,11 +19,11 @@ GingerTTY is a macOS terminal emulator built for developers who work with CLI ag
 - **Custom Vertical Tab Bar** — A sidebar tab bar showing tab title, git branch, and live agent status (Running / Done / Need input). Resizable, with per-tab colors and rename support.
 - **Git Sidebar Inspector** — A right-side panel with four tabs:
   - **Changes**: Committed and uncommitted file changes, commit list, and review submission
-  - **Comments**: GitHub PR review threads with reply and resolve support
+  - **Comments**: GitHub PR review threads with reply/resolve, add-to-chat queueing, and GitHub-style search/filter controls
   - **Checks**: GitHub Actions CI status for the current PR
   - **Files**: File tree of changed files
-- **PR Review Workflow** — Command-palette for selecting open PRs, auto-creates a worktree for the PR branch, and opens it in a new tab for review.
-- **Diff Viewer** — Side-by-side split diffs with syntax highlighting. Supports in-page search, line selection for inline review comments, and combined multi-file diffs.
+- **PR Review Workflow** — PR Reviews modal for selecting open PRs (with repository picker + remote selector), auto-creates a worktree for the PR branch, and opens it in a new tab for review.
+- **Diff Viewer** — Side-by-side split diffs with syntax highlighting. Supports in-page search (`Cmd+F`), copy (`Cmd+C`), line selection for inline review comments, and combined multi-file diffs with review thread annotations.
 - **File Viewer & Editor** — View and edit any file with full syntax highlighting. Markdown files open in a split preview mode.
 - **Fuzzy File Search** — VS Code-style quick open (`Cmd+P`) with fuzzy scoring.
 - **Git Worktrees** — Create or reuse worktrees from the UI. Supports existing and new branches, opens the worktree in a new tab.

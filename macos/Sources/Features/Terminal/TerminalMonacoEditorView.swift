@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 import WebKit
@@ -195,6 +196,27 @@ final class MonacoEditorModel: ObservableObject {
 
     func showFind() {
         webView?.evaluateJavaScript("window.__gingerttyShowFind && window.__gingerttyShowFind();")
+    }
+
+    func copySelectionToPasteboard() {
+        let copyScript = """
+        (function() {
+            if (window.__gingerttyGetSelectionText) {
+                return window.__gingerttyGetSelectionText();
+            }
+            const selection = (window.getSelection && window.getSelection().toString()) || '';
+            return selection;
+        })();
+        """
+        webView?.evaluateJavaScript(copyScript) { result, _ in
+            let text = (result as? String)?.trimmingCharacters(in: .newlines) ?? ""
+            if !text.isEmpty {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+            } else {
+                NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil)
+            }
+        }
     }
 }
 
@@ -953,6 +975,15 @@ struct MonacoEditorWebView: NSViewRepresentable {
             if (!editor) return;
             editor.focus();
             editor.getAction('actions.find').run();
+        };
+
+        window.__gingerttyGetSelectionText = function() {
+            if (!editor) return '';
+            const selection = editor.getSelection();
+            if (selection == null || selection.isEmpty()) return '';
+            const model = editor.getModel();
+            if (!model) return '';
+            return model.getValueInRange(selection);
         };
 
         window.__gingerttySetTheme = function(themeName) {

@@ -75,7 +75,9 @@ final class TerminalTabState: ObservableObject, Identifiable {
 
     @Published var combinedDiffTitle: String?
     @Published var combinedDiffRawText: String?
+    @Published var combinedDiffFileContents: [String: String] = [:]
     @Published var isCombinedDiffLoading: Bool = false
+    @Published var diffReloadRevision: Int = 0
 
     // MARK: Review comments
 
@@ -385,6 +387,7 @@ final class TerminalTabState: ObservableObject, Identifiable {
         selectedReviewCommentID = nil
         combinedDiffTitle = nil
         combinedDiffRawText = nil
+        combinedDiffFileContents = [:]
         isCombinedDiffLoading = false
         viewerFilePath = nil
         viewerResolvedFilePath = nil
@@ -446,6 +449,7 @@ final class TerminalTabState: ObservableObject, Identifiable {
         isDiffLoading = false
         combinedDiffTitle = nil
         combinedDiffRawText = nil
+        combinedDiffFileContents = [:]
         isCombinedDiffLoading = false
     }
 
@@ -511,6 +515,7 @@ final class TerminalTabState: ObservableObject, Identifiable {
     func openCombinedDiff(title: String) {
         combinedDiffTitle = title
         combinedDiffRawText = nil
+        combinedDiffFileContents = [:]
         isCombinedDiffLoading = true
         selectedDiffFile = nil
         diffRawText = nil
@@ -527,15 +532,21 @@ final class TerminalTabState: ObservableObject, Identifiable {
         viewerSaveError = nil
     }
 
-    func setCombinedDiffText(_ text: String) {
+    func setCombinedDiffText(_ text: String, fileContents: [String: String] = [:]) {
         combinedDiffRawText = text
+        combinedDiffFileContents = fileContents
         isCombinedDiffLoading = false
     }
 
     func closeCombinedDiff() {
         combinedDiffTitle = nil
         combinedDiffRawText = nil
+        combinedDiffFileContents = [:]
         isCombinedDiffLoading = false
+    }
+
+    func requestDiffReload() {
+        diffReloadRevision &+= 1
     }
 
     // MARK: Review comments

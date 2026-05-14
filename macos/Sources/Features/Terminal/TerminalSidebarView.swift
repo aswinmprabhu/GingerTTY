@@ -523,11 +523,67 @@ private struct CommitRow: View {
 private struct CommentsInspectorView: View {
     @ObservedObject var controller: TerminalController
     @ObservedObject var tab: TerminalTabState
+    @State private var searchText = ""
+    @State private var hideResolvedComments = true
+    @State private var hideOutdatedComments = false
+    @State private var hiddenAuthors: Set<String> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if !tab.prThreadReviewComments.isEmpty {
                 PRThreadCommentsUberBox(controller: controller, tab: tab)
+            }
+
+            if tab.pullRequestSummary != nil || !tab.reviewThreads.isEmpty {
+                HStack(spacing: 8) {
+                    TerminalNativeSearchField(
+                        text: $searchText,
+                        placeholder: "Filter comments",
+                        focusOnAppear: false
+                    )
+
+                    Menu {
+                        Toggle("Hide resolved comments", isOn: $hideResolvedComments)
+                        Toggle("Hide outdated comments", isOn: $hideOutdatedComments)
+
+                        if !authorLogins.isEmpty {
+                            Divider()
+
+                            Section("Filter by") {
+                                ForEach(authorLogins, id: \.self) { author in
+                                    Toggle(
+                                        author,
+                                        isOn: Binding(
+                                            get: { !hiddenAuthors.contains(author) },
+                                            set: { isIncluded in
+                                                if isIncluded {
+                                                    hiddenAuthors.remove(author)
+                                                } else {
+                                                    hiddenAuthors.insert(author)
+                                                }
+                                            }
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "line.3.horizontal.decrease")
+                            .font(.body.weight(.semibold))
+                            .frame(width: 30, height: 30)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(Color(nsColor: .controlBackgroundColor))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                            )
+                    }
+                    .menuStyle(.borderlessButton)
+                }
+                .onAppear { reconcileHiddenAuthors() }
+                .onChange(of: authorLogins) { _ in reconcileHiddenAuthors() }
             }
 
             if tab.pullRequestSummary == nil, tab.reviewThreads.isEmpty, tab.isPullRequestRefreshing {
@@ -537,18 +593,69 @@ private struct CommentsInspectorView: View {
                 Text(tab.pullRequestMessage ?? "No pull request is available for review comments.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            } else if tab.reviewThreads.isEmpty {
-                Text("No review comments.")
+            } else if filteredThreads.isEmpty {
+                Text(searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "No review comments." : "No matching review comments.")
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(tab.reviewThreads) { thread in
+                ForEach(filteredThreads) { thread in
                     ReviewThreadCard(
                         thread: thread,
                         onViewInDiff: { controller.openDiffForComment(thread) },
-                        onAddToChat: { controller.addThreadToChat(thread) }
+                        onAddToChat: { controller.addThreadToChat(threadID: thread.id) }
                     )
                 }
             }
+        }
+    }
+
+    private var filteredThreads: [TerminalPullRequestReviewThread] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return tab.reviewThreads.filter { thread in
+            matchesVisibilityFilters(thread) && matchesAuthorFilters(thread) && matchesQuery(thread, query: query)
+        }
+    }
+
+    private var authorLogins: [String] {
+        Array(
+            Set(tab.reviewThreads.flatMap { thread in
+                thread.comments.map(\.authorLogin)
+            })
+        )
+        .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    private func reconcileHiddenAuthors() {
+        hiddenAuthors = hiddenAuthors.intersection(Set(authorLogins))
+    }
+
+    private func matchesVisibilityFilters(_ thread: TerminalPullRequestReviewThread) -> Bool {
+        if hideResolvedComments, thread.isResolved {
+            return false
+        }
+        if hideOutdatedComments, thread.isOutdated {
+            return false
+        }
+        return true
+    }
+
+    private func matchesAuthorFilters(_ thread: TerminalPullRequestReviewThread) -> Bool {
+        guard !hiddenAuthors.isEmpty else { return true }
+        let threadAuthors = Set(thread.comments.map(\.authorLogin))
+        guard !threadAuthors.isEmpty else { return true }
+        return !threadAuthors.isSubset(of: hiddenAuthors)
+    }
+
+    private func matchesQuery(_ thread: TerminalPullRequestReviewThread, query: String) -> Bool {
+        guard !query.isEmpty else { return true }
+        if (thread.path ?? "").lowercased().contains(query) {
+            return true
+        }
+        if "\(thread.line ?? thread.originalLine ?? 0)".contains(query) {
+            return true
+        }
+        return thread.comments.contains { comment in
+            comment.authorLogin.lowercased().contains(query)
+                || comment.body.lowercased().contains(query)
         }
     }
 }
@@ -801,6 +908,7 @@ private struct ReviewThreadCard: View {
     let thread: TerminalPullRequestReviewThread
     let onViewInDiff: () -> Void
     let onAddToChat: () -> Void
+    @State private var didAddToChat = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -833,10 +941,14 @@ private struct ReviewThreadCard: View {
                 // Add to chat button
                 Button {
                     onAddToChat()
+                    didAddToChat = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                        didAddToChat = false
+                    }
                 } label: {
-                    Image(systemName: "text.bubble")
+                    Image(systemName: didAddToChat ? "checkmark.circle.fill" : "text.bubble")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(didAddToChat ? .green : .secondary)
                 }
                 .buttonStyle(.plain)
                 .help("Add to chat review")

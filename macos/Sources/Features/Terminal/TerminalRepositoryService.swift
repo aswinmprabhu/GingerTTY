@@ -510,6 +510,24 @@ struct TerminalLocalReviewComment: Identifiable, Equatable {
     let text: String
 }
 
+private func mojibakeScore(_ value: String) -> Int {
+    let suspiciousMarkers = ["Ã", "Â", "â", "Ä", "‚", "�"]
+    return suspiciousMarkers.reduce(0) { partial, marker in
+        partial + value.components(separatedBy: marker).count - 1
+    }
+}
+
+private func repairedMojibake(_ text: String) -> String {
+    let likelyMojibake = ["Ã", "Â", "â", "Ä", "‚"].contains { text.contains($0) }
+    guard likelyMojibake,
+          let windowsData = text.data(using: .windowsCP1252),
+          let repaired = String(data: windowsData, encoding: .utf8) else {
+        return text
+    }
+
+    return mojibakeScore(repaired) < mojibakeScore(text) ? repaired : text
+}
+
 enum TerminalExternalReviewCommentsParserError: LocalizedError, Equatable {
     case invalidJSON
     case unsupportedPayload
@@ -650,7 +668,7 @@ enum TerminalExternalReviewCommentsParser {
     private static func renderedCommentText(from entry: [String: Any]) -> String? {
         if let directText = stringValue(in: entry, keys: ["text", "body", "comment"]),
            !directText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return directText
+            return repairedMojibake(directText)
         }
 
         let title = stringValue(in: entry, keys: ["title"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -691,7 +709,7 @@ enum TerminalExternalReviewCommentsParser {
             parts[0] = "[\(prefixParts.joined(separator: " • "))] \(parts[0])"
         }
 
-        return parts.joined(separator: "\n\n")
+        return repairedMojibake(parts.joined(separator: "\n\n"))
     }
 
     private static func normalizeSide(_ value: String) -> String {
@@ -1661,10 +1679,34 @@ actor TerminalRepositoryService {
             }
             return ""
         } else {
-            return try await git(
+            let trackedDiff = try await git(
                 ["-C", repositoryRoot, "diff", "-U3", "HEAD"],
                 acceptedExitCodes: [0, 1]
             ).stdout
+
+            let untrackedFiles = try await git(
+                ["-C", repositoryRoot, "ls-files", "--others", "--exclude-standard"]
+            ).stdout
+                .split(whereSeparator: \.isNewline)
+                .map(String.init)
+                .filter { !$0.isEmpty }
+
+            var diffParts: [String] = []
+            if !trackedDiff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                diffParts.append(trackedDiff)
+            }
+
+            for filePath in untrackedFiles {
+                let untrackedDiff = try await git(
+                    ["-C", repositoryRoot, "diff", "--no-index", "-U3", "--", "/dev/null", filePath],
+                    acceptedExitCodes: [0, 1]
+                ).stdout
+                if !untrackedDiff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    diffParts.append(untrackedDiff)
+                }
+            }
+
+            return diffParts.joined(separator: "\n")
         }
     }
 
@@ -2474,7 +2516,7 @@ actor TerminalRepositoryService {
         let comments = payload.comments.nodes.map { comment in
             TerminalPullRequestReviewComment(
                 id: comment.id,
-                body: comment.body,
+                body: repairedMojibake(comment.body),
                 url: URL(string: comment.url) ?? URL(string: "https://github.com")!,
                 authorLogin: comment.author?.login ?? "ghost",
                 createdAt: comment.createdAt,

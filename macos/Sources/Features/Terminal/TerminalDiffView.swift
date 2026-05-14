@@ -9,11 +9,26 @@ final class WebViewFindModel: ObservableObject {
     @Published var isVisible = false
     @Published var searchText = ""
     @Published var matchInfo = ""
+    @Published var focusToken = 0
     weak var webView: WKWebView?
 
     private var isInjected = false
 
-    func show() { isVisible = true; injectIfNeeded() }
+    func show(prefillSelection: Bool = false) {
+        isVisible = true
+        injectIfNeeded()
+        focusToken &+= 1
+
+        guard prefillSelection else { return }
+        pullSelectedText { [weak self] selectedText in
+            guard let self else { return }
+            let trimmedSelection = selectedText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedSelection.isEmpty else { return }
+            self.searchText = trimmedSelection
+            self.findNext()
+        }
+    }
+
     func hide() {
         isVisible = false
         searchText = ""
@@ -41,6 +56,24 @@ final class WebViewFindModel: ObservableObject {
         }
     }
 
+    func copySelectionToPasteboard() {
+        pullSelectedText { selectedText in
+            let trimmed = selectedText.trimmingCharacters(in: .newlines)
+            if !trimmed.isEmpty {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(trimmed, forType: .string)
+            } else {
+                NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil)
+            }
+        }
+    }
+
+    private func pullSelectedText(completion: @escaping (String) -> Void) {
+        webView?.evaluateJavaScript(Self.selectionExtractionScript) { result, _ in
+            completion(result as? String ?? "")
+        }
+    }
+
     private func jsEscape(_ s: String) -> String {
         s.replacingOccurrences(of: "\\", with: "\\\\")
          .replacingOccurrences(of: "'", with: "\\'")
@@ -53,15 +86,45 @@ final class WebViewFindModel: ObservableObject {
         webView?.evaluateJavaScript(Self.findScript)
     }
 
+    static let selectionExtractionScript = """
+    (function() {
+        const directSelection = (window.getSelection && window.getSelection().toString()) || '';
+        if (directSelection && directSelection.trim().length > 0) {
+            return directSelection;
+        }
+
+        const active = document.activeElement;
+        if (active && typeof active.value === 'string' && active.selectionStart != null && active.selectionEnd != null && active.selectionEnd > active.selectionStart) {
+            return active.value.substring(active.selectionStart, active.selectionEnd);
+        }
+
+        function selectionFromShadow(root) {
+            if (!root) return '';
+            for (const node of root.querySelectorAll('*')) {
+                if (!node.shadowRoot) continue;
+                const nestedSelection = selectionFromShadow(node.shadowRoot);
+                if (nestedSelection) return nestedSelection;
+                const inner = node.shadowRoot.activeElement;
+                if (inner && typeof inner.value === 'string' && inner.selectionStart != null && inner.selectionEnd != null && inner.selectionEnd > inner.selectionStart) {
+                    return inner.value.substring(inner.selectionStart, inner.selectionEnd);
+                }
+            }
+            return '';
+        }
+
+        return selectionFromShadow(document);
+    })();
+    """
+
     // JS that finds text inside shadow DOMs, highlights matches, and scrolls to them
     static let findScript = """
     (function() {
         if (window._pfInit) return;
         window._pfInit = true;
 
-        let matches = [];
-        let currentIdx = -1;
-        let lastQuery = '';
+        var matches = [];
+        var currentIdx = -1;
+        var lastQuery = '';
         const HL_STYLE = 'background: #facc15; color: #000; border-radius: 2px;';
         const HL_ACTIVE = 'background: #f97316; color: #000; border-radius: 2px;';
         const MARK_CLASS = '_pf-hl';
@@ -182,6 +245,9 @@ struct WebViewFindBar: View {
                 TerminalNativeSearchField(
                     text: $model.searchText,
                     placeholder: "Find…",
+                    focusOnAppear: false,
+                    focusToken: model.focusToken,
+                    selectAllOnFocus: true,
                     onReturn: { model.findNext() },
                     onShiftReturn: { model.findPrevious() },
                     onEscape: { model.hide() },
@@ -309,8 +375,11 @@ struct TerminalDiffView: View {
             WebViewFindBar(model: findModel)
         }
         .background {
-            Button("") { findModel.show() }
+            Button("") { handleFindShortcut() }
                 .keyboardShortcut("f", modifiers: .command)
+                .hidden()
+            Button("") { findModel.copySelectionToPasteboard() }
+                .keyboardShortcut("c", modifiers: .command)
                 .hidden()
         }
         .onExitCommand {
@@ -378,6 +447,7 @@ struct TerminalDiffView: View {
                     isReviewMode: tab.isReviewMode,
                     draftComments: tab.localReviewComments.filter { $0.filePath == tab.selectedDiffFile?.path },
                     selectedDraftCommentID: tab.selectedReviewCommentID?.uuidString,
+                    reloadRevision: tab.diffReloadRevision,
                     findModel: findModel,
                     onLinesSelected: { startLine, endLine, side in
                         tab.pendingSelectionStart = startLine
@@ -386,10 +456,9 @@ struct TerminalDiffView: View {
                         tab.showCommentBox = true
                         controller.objectWillChange.send()
                     },
-                    onAddThreadToChat: {
-                        if let thread = tab.activeReviewThread {
-                            controller.addThreadToChat(thread)
-                        }
+                    onAddThreadToChat: { threadID in
+                        guard let threadID else { return }
+                        _ = controller.addThreadToChat(threadID: threadID)
                     },
                     onReplyToThread: { threadID, body in
                         controller.replyToThread(threadID: threadID, body: body)
@@ -460,6 +529,10 @@ struct TerminalDiffView: View {
         return "Lines \(start)–\(end) (\(side))"
     }
 
+    private func handleFindShortcut() {
+        findModel.show(prefillSelection: true)
+    }
+
     private func addComment() {
         let text = tab.pendingCommentText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty,
@@ -506,9 +579,10 @@ struct PierreDiffWebView: NSViewRepresentable {
     let isReviewMode: Bool
     let draftComments: [TerminalLocalReviewComment]
     let selectedDraftCommentID: String?
+    let reloadRevision: Int
     var findModel: WebViewFindModel? = nil
     let onLinesSelected: (_ startLine: Int, _ endLine: Int, _ side: String) -> Void
-    let onAddThreadToChat: () -> Void
+    let onAddThreadToChat: (_ threadID: String?) -> Void
     let onReplyToThread: (_ threadID: String, _ body: String) -> Void
     let onResolveThread: (_ threadID: String, _ resolve: Bool) -> Void
     let onStartReview: (_ startLine: Int, _ endLine: Int, _ side: String, _ body: String) -> Void
@@ -541,6 +615,7 @@ struct PierreDiffWebView: NSViewRepresentable {
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.setValue(false, forKey: "drawsBackground")
+        webView.navigationDelegate = context.coordinator
         context.coordinator.webView = webView
         context.coordinator.lastDiffText = diffText
         context.coordinator.lastDraftSignature = Self.draftSignature(for: draftComments)
@@ -549,6 +624,7 @@ struct PierreDiffWebView: NSViewRepresentable {
         context.coordinator.lastIsReviewMode = isReviewMode
         context.coordinator.lastThemeType = theme.pierreThemeType
         context.coordinator.lastSelectedDraftCommentID = selectedDraftCommentID
+        context.coordinator.lastReloadRevision = reloadRevision
         findModel?.webView = webView
 
         guard let baseURL = PierreLocalResources.baseURL else {
@@ -575,13 +651,22 @@ struct PierreDiffWebView: NSViewRepresentable {
     func updateNSView(_ webView: WKWebView, context: Context) {
         let draftSignature = Self.draftSignature(for: draftComments)
         let reviewThreadSignature = Self.reviewThreadSignature(for: reviewThread)
-        if context.coordinator.lastDiffText != diffText
-            || context.coordinator.lastDraftSignature != draftSignature
-            || context.coordinator.lastReviewThreadSignature != reviewThreadSignature
-            || context.coordinator.lastFileName != fileName
-            || context.coordinator.lastIsReviewMode != isReviewMode
-            || context.coordinator.lastThemeType != theme.pierreThemeType
-            || context.coordinator.lastSelectedDraftCommentID != selectedDraftCommentID {
+        let diffChanged = context.coordinator.lastDiffText != diffText
+        let draftChanged = context.coordinator.lastDraftSignature != draftSignature
+        let reviewThreadChanged = context.coordinator.lastReviewThreadSignature != reviewThreadSignature
+        let fileChanged = context.coordinator.lastFileName != fileName
+        let reviewModeChanged = context.coordinator.lastIsReviewMode != isReviewMode
+        let themeChanged = context.coordinator.lastThemeType != theme.pierreThemeType
+        let selectedDraftChanged = context.coordinator.lastSelectedDraftCommentID != selectedDraftCommentID
+        let reloadRevisionChanged = context.coordinator.lastReloadRevision != reloadRevision
+        if diffChanged
+            || draftChanged
+            || reviewThreadChanged
+            || fileChanged
+            || reviewModeChanged
+            || themeChanged
+            || selectedDraftChanged
+            || reloadRevisionChanged {
             context.coordinator.lastDiffText = diffText
             context.coordinator.lastDraftSignature = draftSignature
             context.coordinator.lastReviewThreadSignature = reviewThreadSignature
@@ -589,6 +674,7 @@ struct PierreDiffWebView: NSViewRepresentable {
             context.coordinator.lastIsReviewMode = isReviewMode
             context.coordinator.lastThemeType = theme.pierreThemeType
             context.coordinator.lastSelectedDraftCommentID = selectedDraftCommentID
+            context.coordinator.lastReloadRevision = reloadRevision
             guard let baseURL = PierreLocalResources.baseURL else {
                 webView.loadHTMLString(
                     PierreLocalResources.errorHTML(message: PierreLocalResources.missingMessage, theme: theme),
@@ -604,7 +690,19 @@ struct PierreDiffWebView: NSViewRepresentable {
                 draftComments: draftComments,
                 selectedDraftCommentID: selectedDraftCommentID
             )
-            webView.loadHTMLString(html, baseURL: baseURL)
+            let preserveScroll = draftChanged
+                && !diffChanged
+                && !reviewThreadChanged
+                && !fileChanged
+                && !reviewModeChanged
+                && !themeChanged
+                && !reloadRevisionChanged
+            context.coordinator.reload(
+                webView: webView,
+                html: html,
+                baseURL: baseURL,
+                preserveScroll: preserveScroll
+            )
         }
     }
 
@@ -637,9 +735,9 @@ struct PierreDiffWebView: NSViewRepresentable {
         ].joined(separator: "|")
     }
 
-    class Coordinator: NSObject, WKScriptMessageHandler {
+    class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         var onLinesSelected: (_ startLine: Int, _ endLine: Int, _ side: String) -> Void
-        var onAddThreadToChat: () -> Void
+        var onAddThreadToChat: (_ threadID: String?) -> Void
         var onReplyToThread: (_ threadID: String, _ body: String) -> Void
         var onResolveThread: (_ threadID: String, _ resolve: Bool) -> Void
         var onStartReview: (_ startLine: Int, _ endLine: Int, _ side: String, _ body: String) -> Void
@@ -653,10 +751,12 @@ struct PierreDiffWebView: NSViewRepresentable {
         var lastIsReviewMode = false
         var lastThemeType = "dark"
         var lastSelectedDraftCommentID: String?
+        var lastReloadRevision = 0
+        private var pendingScrollRestore: Double?
 
         init(
             onLinesSelected: @escaping (_ startLine: Int, _ endLine: Int, _ side: String) -> Void,
-            onAddThreadToChat: @escaping () -> Void,
+            onAddThreadToChat: @escaping (_ threadID: String?) -> Void,
             onReplyToThread: @escaping (_ threadID: String, _ body: String) -> Void,
             onResolveThread: @escaping (_ threadID: String, _ resolve: Bool) -> Void,
             onStartReview: @escaping (_ startLine: Int, _ endLine: Int, _ side: String, _ body: String) -> Void,
@@ -672,13 +772,51 @@ struct PierreDiffWebView: NSViewRepresentable {
             self.onUpdateDraft = onUpdateDraft
         }
 
+        func reload(
+            webView: WKWebView,
+            html: String,
+            baseURL: URL?,
+            preserveScroll: Bool
+        ) {
+            guard preserveScroll else {
+                pendingScrollRestore = nil
+                webView.loadHTMLString(html, baseURL: baseURL)
+                return
+            }
+
+            webView.evaluateJavaScript(
+                "(function(){ const c = document.getElementById('container'); return c ? c.scrollTop : 0; })();"
+            ) { [weak self, weak webView] result, _ in
+                if let number = result as? NSNumber {
+                    self?.pendingScrollRestore = number.doubleValue
+                } else {
+                    self?.pendingScrollRestore = nil
+                }
+                webView?.loadHTMLString(html, baseURL: baseURL)
+            }
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            guard let scrollTop = pendingScrollRestore else { return }
+            pendingScrollRestore = nil
+            let restoreJS = """
+            (function() {
+                const c = document.getElementById('container');
+                if (c) c.scrollTop = \(scrollTop);
+            })();
+            """
+            webView.evaluateJavaScript(restoreJS)
+        }
+
         func userContentController(
             _ userContentController: WKUserContentController,
             didReceive message: WKScriptMessage
         ) {
             if message.name == "addToChat" {
+                let body = message.body as? [String: Any]
+                let threadID = body?["threadID"] as? String
                 DispatchQueue.main.async { [weak self] in
-                    self?.onAddThreadToChat()
+                    self?.onAddThreadToChat(threadID)
                 }
                 return
             }
@@ -897,10 +1035,10 @@ struct PierreDiffWebView: NSViewRepresentable {
 
             \(annotationsJS)
 
-            let annotationElement = null;
+            var annotationElement = null;
 
             // Inline comment form state
-            let activeInlineForm = null;
+            var activeInlineForm = null;
 
             function removeInlineForm() {
                 if (activeInlineForm && activeInlineForm.parentNode) {
@@ -909,7 +1047,31 @@ struct PierreDiffWebView: NSViewRepresentable {
                 activeInlineForm = null;
             }
 
-            function showInlineCommentForm(startLine, endLine, side, parentEl) {
+            function findInShadow(root, finder) {
+                const direct = finder(root);
+                if (direct) return direct;
+                for (const host of root.querySelectorAll('*')) {
+                    if (!host.shadowRoot) continue;
+                    const nested = findInShadow(host.shadowRoot, finder);
+                    if (nested) return nested;
+                }
+                return null;
+            }
+
+            function findLineAnchor(lineNumber, side) {
+                const targetSide = side === 'old' ? 'deletions' : 'additions';
+                return findInShadow(document, (root) => {
+                    const nodes = Array.from(root.querySelectorAll('[data-line="' + lineNumber + '"]'));
+                    if (nodes.length === 0) return null;
+                    return nodes.find((node) => {
+                        const type = node.getAttribute('data-line-type');
+                        if (targetSide === 'deletions') return type === 'deletion';
+                        return type !== 'deletion';
+                    }) || nodes[0];
+                });
+            }
+
+            function showInlineCommentForm(startLine, endLine, side, parentEl, anchorEl) {
                 removeInlineForm();
 
                 const form = document.createElement('div');
@@ -967,13 +1129,16 @@ struct PierreDiffWebView: NSViewRepresentable {
 
                 form.appendChild(btnRow);
 
-                if (parentEl) {
+                if (anchorEl && anchorEl.parentElement) {
+                    anchorEl.insertAdjacentElement('afterend', form);
+                } else if (parentEl) {
                     parentEl.appendChild(form);
                 }
                 activeInlineForm = form;
 
                 // Focus textarea
                 setTimeout(() => textarea.focus(), 50);
+                form.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 
                 return form;
             }
@@ -1105,7 +1270,7 @@ struct PierreDiffWebView: NSViewRepresentable {
                 const threadID = m.threadID;
 
                 const wrapper = document.createElement('div');
-                wrapper.id = 'review-thread-annotation';
+                wrapper.id = 'review-thread-annotation-' + threadID;
                 annotationElement = wrapper;
                 wrapper.style.cssText = 'padding: 12px 16px; background: #1e293b; border-left: 3px solid #3b82f6; margin: 4px 0; font-family: -apple-system, BlinkMacSystemFont, sans-serif;';
 
@@ -1146,9 +1311,21 @@ struct PierreDiffWebView: NSViewRepresentable {
                 const addBtn = document.createElement('button');
                 addBtn.textContent = 'Add to chat';
                 addBtn.style.cssText = btnStyle;
+                var addToChatTimer = null;
                 addBtn.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    window.webkit.messageHandlers.addToChat.postMessage({});
+                    window.webkit.messageHandlers.addToChat.postMessage({ threadID: threadID });
+                    addBtn.disabled = true;
+                    addBtn.textContent = 'Added';
+                    addBtn.style.borderColor = '#065f46';
+                    addBtn.style.color = '#6ee7b7';
+                    if (addToChatTimer) clearTimeout(addToChatTimer);
+                    addToChatTimer = setTimeout(() => {
+                        addBtn.disabled = false;
+                        addBtn.textContent = 'Add to chat';
+                        addBtn.style.borderColor = '#475569';
+                        addBtn.style.color = '#e2e8f0';
+                    }, 1200);
                 });
                 addBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
                 header.appendChild(addBtn);
@@ -1222,9 +1399,8 @@ struct PierreDiffWebView: NSViewRepresentable {
             // Handle line selection — in review mode, show inline form; otherwise post to Swift
             function handleLineSelection(startLine, endLine, side, containerEl) {
                 if (isReviewMode) {
-                    // For review mode, inject an inline comment form into the container
-                    // We insert it after the diff element
-                    showInlineCommentForm(startLine, endLine, side, containerEl);
+                    const anchor = findLineAnchor(endLine, side) || findLineAnchor(startLine, side);
+                    showInlineCommentForm(startLine, endLine, side, containerEl, anchor);
                 } else {
                     window.webkit.messageHandlers.lineSelection.postMessage({
                         startLine: startLine,
@@ -1295,18 +1471,10 @@ struct PierreDiffWebView: NSViewRepresentable {
             if (annotations.length > 0) {
                 function scrollToAnnotation() {
                     const containerEl = document.getElementById('container');
-                    function findInShadow(root) {
-                        const el = root.querySelector('#review-thread-annotation');
-                        if (el) return el;
-                        for (const host of root.querySelectorAll('*')) {
-                            if (host.shadowRoot) {
-                                const found = findInShadow(host.shadowRoot);
-                                if (found) return found;
-                            }
-                        }
-                        return null;
-                    }
-                    const target = annotationElement || findInShadow(document);
+                    const target = annotationElement || findInShadow(document, (root) => {
+                        return root.querySelector('[id^="review-thread-annotation-"]')
+                            || root.querySelector('[id^="draft-annotation-"]');
+                    });
                     if (target && containerEl) {
                         let offsetTop = 0;
                         let el = target;
@@ -1662,10 +1830,9 @@ struct TerminalFileViewerView: View {
     @ObservedObject var controller: TerminalController
     @ObservedObject var tab: TerminalTabState
     @StateObject private var editorModel = MonacoEditorModel()
-    @State private var markdownPreviewWidth: CGFloat = 420
+    @State private var markdownPreviewWidth: CGFloat = 0
 
     private let markdownPreviewMinWidth: CGFloat = 280
-    private let markdownPreviewMaxWidth: CGFloat = 760
     private let markdownEditorMinWidth: CGFloat = 320
     private let fileViewerDividerWidth: CGFloat = 5
 
@@ -1702,6 +1869,9 @@ struct TerminalFileViewerView: View {
         .background {
             Button("") { editorModel.showFind() }
                 .keyboardShortcut("f", modifiers: .command)
+                .hidden()
+            Button("") { editorModel.copySelectionToPasteboard() }
+                .keyboardShortcut("c", modifiers: .command)
                 .hidden()
             Button("") { controller.saveViewerFile() }
                 .keyboardShortcut("s", modifiers: .command)
@@ -1896,11 +2066,10 @@ struct TerminalFileViewerView: View {
 
     private func markdownSplitLayout(in totalWidth: CGFloat) -> (editorWidth: CGFloat, previewWidth: CGFloat, previewMaxWidth: CGFloat) {
         let availableWidth = max(totalWidth, markdownEditorMinWidth + markdownPreviewMinWidth + fileViewerDividerWidth)
-        let previewMaxWidth = max(
-            markdownPreviewMinWidth,
-            min(markdownPreviewMaxWidth, availableWidth - markdownEditorMinWidth - fileViewerDividerWidth)
-        )
-        let previewWidth = min(max(markdownPreviewWidth, markdownPreviewMinWidth), previewMaxWidth)
+        let previewMaxWidth = max(markdownPreviewMinWidth, availableWidth - markdownEditorMinWidth - fileViewerDividerWidth)
+        let defaultPreviewWidth = max(markdownPreviewMinWidth, (availableWidth - fileViewerDividerWidth) / 2)
+        let requestedPreviewWidth = markdownPreviewWidth > 0 ? markdownPreviewWidth : defaultPreviewWidth
+        let previewWidth = min(max(requestedPreviewWidth, markdownPreviewMinWidth), previewMaxWidth)
         let editorWidth = max(markdownEditorMinWidth, availableWidth - previewWidth - fileViewerDividerWidth)
         return (editorWidth, previewWidth, previewMaxWidth)
     }
@@ -2000,8 +2169,11 @@ struct TerminalCombinedDiffView: View {
             WebViewFindBar(model: findModel)
         }
         .background {
-            Button("") { findModel.show() }
+            Button("") { handleFindShortcut() }
                 .keyboardShortcut("f", modifiers: .command)
+                .hidden()
+            Button("") { findModel.copySelectionToPasteboard() }
+                .keyboardShortcut("c", modifiers: .command)
                 .hidden()
         }
         .onExitCommand {
@@ -2029,6 +2201,10 @@ struct TerminalCombinedDiffView: View {
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
+    private func handleFindShortcut() {
+        findModel.show(prefillSelection: true)
+    }
+
     private var combinedDiffContent: some View {
         Group {
             if tab.isCombinedDiffLoading {
@@ -2044,7 +2220,27 @@ struct TerminalCombinedDiffView: View {
                 PierreCombinedDiffWebView(
                     diffText: diffText,
                     theme: codeTheme,
-                    findModel: findModel
+                    reviewThreads: tab.reviewThreads,
+                    focusedThreadID: tab.activeReviewThread?.id,
+                    fileContentsByPath: tab.combinedDiffFileContents,
+                    reloadRevision: tab.diffReloadRevision,
+                    findModel: findModel,
+                    onAddThreadToChat: { threadID in
+                        tab.activeReviewThread = tab.reviewThreads.first(where: { $0.id == threadID })
+                        _ = controller.addThreadToChat(threadID: threadID)
+                    },
+                    onReplyToThread: { threadID, body in
+                        if let thread = tab.reviewThreads.first(where: { $0.id == threadID }) {
+                            tab.activeReviewThread = thread
+                        }
+                        controller.replyToThread(threadID: threadID, body: body)
+                    },
+                    onResolveThread: { threadID, resolve in
+                        if let thread = tab.reviewThreads.first(where: { $0.id == threadID }) {
+                            tab.activeReviewThread = thread
+                        }
+                        controller.resolveThread(threadID: threadID, resolve: resolve)
+                    }
                 )
             } else {
                 VStack {
@@ -2063,20 +2259,39 @@ struct TerminalCombinedDiffView: View {
 struct PierreCombinedDiffWebView: NSViewRepresentable {
     let diffText: String
     let theme: TerminalCodeTheme
+    let reviewThreads: [TerminalPullRequestReviewThread]
+    let focusedThreadID: String?
+    let fileContentsByPath: [String: String]
+    let reloadRevision: Int
     var findModel: WebViewFindModel? = nil
+    let onAddThreadToChat: (_ threadID: String) -> Void
+    let onReplyToThread: (_ threadID: String, _ body: String) -> Void
+    let onResolveThread: (_ threadID: String, _ resolve: Bool) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator()
+        Coordinator(
+            onAddThreadToChat: onAddThreadToChat,
+            onReplyToThread: onReplyToThread,
+            onResolveThread: onResolveThread
+        )
     }
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
+        let contentController = config.userContentController
+        contentController.add(context.coordinator, name: "addToChat")
+        contentController.add(context.coordinator, name: "replyToThread")
+        contentController.add(context.coordinator, name: "resolveThread")
         config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.setValue(false, forKey: "drawsBackground")
         context.coordinator.lastDiffText = diffText
         context.coordinator.lastThemeType = theme.pierreThemeType
+        context.coordinator.lastReviewThreadsSignature = Self.reviewThreadsSignature(for: reviewThreads)
+        context.coordinator.lastFocusedThreadID = focusedThreadID
+        context.coordinator.lastFileContentsSignature = Self.fileContentsSignature(for: fileContentsByPath)
+        context.coordinator.lastReloadRevision = reloadRevision
         findModel?.webView = webView
 
         guard let baseURL = PierreLocalResources.baseURL else {
@@ -2087,16 +2302,32 @@ struct PierreCombinedDiffWebView: NSViewRepresentable {
             return webView
         }
 
-        let html = Self.buildCombinedHTML(diffText: diffText, theme: theme)
+        let html = Self.buildCombinedHTML(
+            diffText: diffText,
+            theme: theme,
+            reviewThreads: reviewThreads,
+            focusedThreadID: focusedThreadID,
+            fileContentsByPath: fileContentsByPath
+        )
         webView.loadHTMLString(html, baseURL: baseURL)
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
+        let reviewThreadsSignature = Self.reviewThreadsSignature(for: reviewThreads)
+        let fileContentsSignature = Self.fileContentsSignature(for: fileContentsByPath)
         if context.coordinator.lastDiffText != diffText
-            || context.coordinator.lastThemeType != theme.pierreThemeType {
+            || context.coordinator.lastThemeType != theme.pierreThemeType
+            || context.coordinator.lastReviewThreadsSignature != reviewThreadsSignature
+            || context.coordinator.lastFocusedThreadID != focusedThreadID
+            || context.coordinator.lastFileContentsSignature != fileContentsSignature
+            || context.coordinator.lastReloadRevision != reloadRevision {
             context.coordinator.lastDiffText = diffText
             context.coordinator.lastThemeType = theme.pierreThemeType
+            context.coordinator.lastReviewThreadsSignature = reviewThreadsSignature
+            context.coordinator.lastFocusedThreadID = focusedThreadID
+            context.coordinator.lastFileContentsSignature = fileContentsSignature
+            context.coordinator.lastReloadRevision = reloadRevision
             guard let baseURL = PierreLocalResources.baseURL else {
                 webView.loadHTMLString(
                     PierreLocalResources.errorHTML(message: PierreLocalResources.missingMessage, theme: theme),
@@ -2104,21 +2335,157 @@ struct PierreCombinedDiffWebView: NSViewRepresentable {
                 )
                 return
             }
-            let html = Self.buildCombinedHTML(diffText: diffText, theme: theme)
+            let html = Self.buildCombinedHTML(
+                diffText: diffText,
+                theme: theme,
+                reviewThreads: reviewThreads,
+                focusedThreadID: focusedThreadID,
+                fileContentsByPath: fileContentsByPath
+            )
             webView.loadHTMLString(html, baseURL: baseURL)
         }
     }
 
-    class Coordinator: NSObject {
+    class Coordinator: NSObject, WKScriptMessageHandler {
+        let onAddThreadToChat: (_ threadID: String) -> Void
+        let onReplyToThread: (_ threadID: String, _ body: String) -> Void
+        let onResolveThread: (_ threadID: String, _ resolve: Bool) -> Void
         var lastDiffText: String?
         var lastThemeType = "dark"
+        var lastReviewThreadsSignature = ""
+        var lastFocusedThreadID: String?
+        var lastFileContentsSignature = ""
+        var lastReloadRevision = 0
+
+        init(
+            onAddThreadToChat: @escaping (_ threadID: String) -> Void,
+            onReplyToThread: @escaping (_ threadID: String, _ body: String) -> Void,
+            onResolveThread: @escaping (_ threadID: String, _ resolve: Bool) -> Void
+        ) {
+            self.onAddThreadToChat = onAddThreadToChat
+            self.onReplyToThread = onReplyToThread
+            self.onResolveThread = onResolveThread
+        }
+
+        func userContentController(
+            _ userContentController: WKUserContentController,
+            didReceive message: WKScriptMessage
+        ) {
+            if message.name == "addToChat",
+               let payload = message.body as? [String: Any],
+               let threadID = payload["threadID"] as? String {
+                DispatchQueue.main.async { [weak self] in
+                    self?.onAddThreadToChat(threadID)
+                }
+                return
+            }
+
+            if message.name == "replyToThread",
+               let payload = message.body as? [String: Any],
+               let threadID = payload["threadID"] as? String,
+               let body = payload["body"] as? String {
+                DispatchQueue.main.async { [weak self] in
+                    self?.onReplyToThread(threadID, body)
+                }
+                return
+            }
+
+            if message.name == "resolveThread",
+               let payload = message.body as? [String: Any],
+               let threadID = payload["threadID"] as? String,
+               let resolve = payload["resolve"] as? Bool {
+                DispatchQueue.main.async { [weak self] in
+                    self?.onResolveThread(threadID, resolve)
+                }
+            }
+        }
     }
 
-    private static func buildCombinedHTML(diffText: String, theme: TerminalCodeTheme) -> String {
+    private static func reviewThreadsSignature(for threads: [TerminalPullRequestReviewThread]) -> String {
+        threads
+            .sorted { $0.id < $1.id }
+            .map {
+                [
+                    $0.id,
+                    $0.isResolved ? "resolved" : "open",
+                    $0.isOutdated ? "outdated" : "current",
+                    "\($0.comments.count)",
+                    $0.comments.last?.id ?? "",
+                    "\($0.updatedAt.timeIntervalSince1970)",
+                ].joined(separator: "|")
+            }
+            .joined(separator: "\n")
+    }
+
+    private static func fileContentsSignature(for fileContentsByPath: [String: String]) -> String {
+        fileContentsByPath.keys
+            .sorted()
+            .map { path in
+                "\(path):\(fileContentsByPath[path]?.count ?? 0)"
+            }
+            .joined(separator: "|")
+    }
+
+    private static func jsonLiteral(_ object: Any) -> String {
+        let fallback = object is [Any] ? "[]" : "{}"
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object, options: []),
+              let string = String(data: data, encoding: .utf8) else {
+            return fallback
+        }
+        return string.replacingOccurrences(of: "</", with: "<\\/")
+    }
+
+    private static func annotationsByPathJSON(
+        for reviewThreads: [TerminalPullRequestReviewThread]
+    ) -> String {
+        var annotationsByPath: [String: [[String: Any]]] = [:]
+
+        for thread in reviewThreads {
+            guard let path = thread.path,
+                  let line = thread.line ?? thread.originalLine else {
+                continue
+            }
+
+            let side = thread.diffSide?.uppercased() == "LEFT" ? "deletions" : "additions"
+            let comments = thread.comments.map { comment in
+                [
+                    "author": comment.authorLogin,
+                    "body": comment.body,
+                    "date": comment.createdAt.formatted(date: .abbreviated, time: .shortened),
+                ]
+            }
+            let annotation: [String: Any] = [
+                "lineNumber": line,
+                "side": side,
+                "metadata": [
+                    "type": "thread",
+                    "threadID": thread.id,
+                    "comments": comments,
+                    "isResolved": thread.isResolved,
+                    "isOutdated": thread.isOutdated,
+                ],
+            ]
+            annotationsByPath[path, default: []].append(annotation)
+        }
+
+        return jsonLiteral(annotationsByPath)
+    }
+
+    private static func buildCombinedHTML(
+        diffText: String,
+        theme: TerminalCodeTheme,
+        reviewThreads: [TerminalPullRequestReviewThread],
+        focusedThreadID: String?,
+        fileContentsByPath: [String: String]
+    ) -> String {
         let escapedDiff = diffText
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "`", with: "\\`")
             .replacingOccurrences(of: "$", with: "\\$")
+        let annotationsByPathJSON = annotationsByPathJSON(for: reviewThreads)
+        let fileContentsJSON = jsonLiteral(fileContentsByPath)
+        let focusedThreadIDJS = focusedThreadID.map { "'\(PierreDiffWebView.escapeJS($0))'" } ?? "null"
         let themeType = theme.pierreThemeType
         let backgroundHex = theme.shellBackgroundHex
         let foregroundHex = theme.shellForegroundHex
@@ -2176,12 +2543,177 @@ struct PierreCombinedDiffWebView: NSViewRepresentable {
 
             const patchText = `\(escapedDiff)`;
             const parsedPatches = parsePatchFiles(patchText);
+            const annotationsByPath = \(annotationsByPathJSON);
+            const fileContentsByPath = \(fileContentsJSON);
+            const focusedThreadID = \(focusedThreadIDJS);
+
+            function normalizePath(path) {
+                if (!path) return null;
+                let normalized = String(path);
+                if (normalized.startsWith('a/') || normalized.startsWith('b/')) {
+                    normalized = normalized.substring(2);
+                }
+                return normalized;
+            }
+
+            function findInShadow(root, finder) {
+                const direct = finder(root);
+                if (direct) return direct;
+                for (const host of root.querySelectorAll('*')) {
+                    if (!host.shadowRoot) continue;
+                    const nested = findInShadow(host.shadowRoot, finder);
+                    if (nested) return nested;
+                }
+                return null;
+            }
+
+            function renderAnnotation(annotation) {
+                const m = annotation.metadata;
+                const threadID = m.threadID;
+
+                const wrapper = document.createElement('div');
+                wrapper.id = 'review-thread-annotation-' + threadID;
+                wrapper.style.cssText = 'padding: 12px 16px; background: #1e293b; border-left: 3px solid #3b82f6; margin: 4px 0; font-family: -apple-system, BlinkMacSystemFont, sans-serif;';
+
+                const header = document.createElement('div');
+                header.style.cssText = 'display: flex; align-items: center; gap: 8px; margin-bottom: 8px;';
+
+                const threadLabel = document.createElement('span');
+                threadLabel.style.cssText = 'font-size: 11px; color: #94a3b8; font-weight: 600; flex-shrink: 0;';
+                threadLabel.textContent = m.isResolved ? 'Resolved Thread' : (m.isOutdated ? 'Outdated Thread' : 'Review Thread');
+                header.appendChild(threadLabel);
+
+                const spacer = document.createElement('span');
+                spacer.style.cssText = 'flex: 1;';
+                header.appendChild(spacer);
+
+                const btnStyle = 'font-size: 11px; padding: 3px 10px; border-radius: 4px; border: 1px solid #475569; background: #334155; color: #e2e8f0; cursor: pointer; font-family: inherit; flex-shrink: 0;';
+
+                const resolveBtn = document.createElement('button');
+                resolveBtn.textContent = m.isResolved ? 'Unresolve' : 'Resolve';
+                resolveBtn.style.cssText = btnStyle;
+                if (m.isResolved) {
+                    resolveBtn.style.borderColor = '#065f46';
+                    resolveBtn.style.color = '#6ee7b7';
+                }
+                resolveBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    window.webkit.messageHandlers.resolveThread.postMessage({
+                        threadID: threadID,
+                        resolve: !m.isResolved
+                    });
+                    resolveBtn.disabled = true;
+                });
+                resolveBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+                header.appendChild(resolveBtn);
+
+                const addBtn = document.createElement('button');
+                addBtn.textContent = 'Add to chat';
+                addBtn.style.cssText = btnStyle;
+                addBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    window.webkit.messageHandlers.addToChat.postMessage({ threadID: threadID });
+                    addBtn.disabled = true;
+                    addBtn.textContent = 'Added';
+                    addBtn.style.borderColor = '#065f46';
+                    addBtn.style.color = '#6ee7b7';
+                    setTimeout(() => {
+                        addBtn.disabled = false;
+                        addBtn.textContent = 'Add to chat';
+                        addBtn.style.borderColor = '#475569';
+                        addBtn.style.color = '#e2e8f0';
+                    }, 1200);
+                });
+                addBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+                header.appendChild(addBtn);
+
+                wrapper.appendChild(header);
+
+                for (const c of m.comments) {
+                    const commentDiv = document.createElement('div');
+                    commentDiv.style.cssText = 'padding: 8px 10px; background: #0f172a; border-radius: 6px; margin-bottom: 6px;';
+
+                    const commentHeader = document.createElement('div');
+                    commentHeader.style.cssText = 'display: flex; justify-content: space-between; margin-bottom: 4px;';
+
+                    const author = document.createElement('span');
+                    author.style.cssText = 'font-size: 12px; font-weight: 600; color: #e2e8f0;';
+                    author.textContent = c.author;
+                    commentHeader.appendChild(author);
+
+                    const date = document.createElement('span');
+                    date.style.cssText = 'font-size: 11px; color: #64748b;';
+                    date.textContent = c.date;
+                    commentHeader.appendChild(date);
+
+                    commentDiv.appendChild(commentHeader);
+
+                    const body = document.createElement('div');
+                    body.style.cssText = 'font-size: 13px; color: #cbd5e1; line-height: 1.5; white-space: pre-wrap;';
+                    body.textContent = c.body;
+                    commentDiv.appendChild(body);
+                    wrapper.appendChild(commentDiv);
+                }
+
+                const replyArea = document.createElement('div');
+                replyArea.style.cssText = 'margin-top: 8px; display: flex; flex-direction: column; gap: 8px;';
+                const textarea = document.createElement('textarea');
+                textarea.placeholder = 'Reply to this thread…';
+                textarea.style.cssText = 'width: 100%; min-height: 36px; max-height: 100px; padding: 8px; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: #e2e8f0; font-size: 13px; font-family: inherit; resize: vertical;';
+                textarea.addEventListener('pointerdown', (e) => e.stopPropagation());
+                textarea.addEventListener('keydown', (e) => e.stopPropagation());
+                replyArea.appendChild(textarea);
+
+                const sendBtn = document.createElement('button');
+                sendBtn.textContent = 'Reply';
+                sendBtn.style.cssText = 'align-self: flex-end; font-size: 12px; padding: 8px 14px; border-radius: 6px; border: none; background: #3b82f6; color: white; cursor: pointer; font-weight: 600; font-family: inherit;';
+                sendBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const text = textarea.value.trim();
+                    if (!text) return;
+                    window.webkit.messageHandlers.replyToThread.postMessage({
+                        threadID: threadID,
+                        body: text
+                    });
+                    textarea.disabled = true;
+                    sendBtn.disabled = true;
+                    sendBtn.textContent = 'Sent';
+                    sendBtn.style.background = '#065f46';
+                });
+                sendBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+                replyArea.appendChild(sendBtn);
+                wrapper.appendChild(replyArea);
+
+                return wrapper;
+            }
 
             document.getElementById('loading').classList.add('hidden');
             const container = document.getElementById('container');
+            const splitRe = /(?<=\\n)/;
 
             for (const patch of parsedPatches) {
                 for (const fileDiff of patch.files) {
+                    const candidatePaths = [normalizePath(fileDiff.name), normalizePath(fileDiff.prevName)].filter(Boolean);
+                    const dedupedPaths = [...new Set(candidatePaths)];
+
+                    let lineAnnotations = [];
+                    for (const candidatePath of dedupedPaths) {
+                        const annotationsForPath = annotationsByPath[candidatePath];
+                        if (Array.isArray(annotationsForPath)) {
+                            lineAnnotations = lineAnnotations.concat(annotationsForPath);
+                        }
+                    }
+
+                    for (const candidatePath of dedupedPaths) {
+                        const fullFileContent = fileContentsByPath[candidatePath];
+                        if (typeof fullFileContent === 'string') {
+                            const fileLines = fullFileContent.split(splitRe);
+                            fileDiff.newLines = fileLines;
+                            fileDiff.oldLines = fileLines;
+                            break;
+                        }
+                    }
+
                     const instance = new FileDiff({
                         theme: { dark: 'dark-plus', light: 'light-plus' },
                         themeType: '\(themeType)',
@@ -2190,11 +2722,45 @@ struct PierreCombinedDiffWebView: NSViewRepresentable {
                         lineHoverHighlight: 'both',
                         hunkSeparators: 'line-info',
                         expansionLineCount: 20,
+                        renderAnnotation: renderAnnotation,
                     });
 
                     const fileContainer = document.createElement(DIFFS_TAG_NAME);
                     container.appendChild(fileContainer);
-                    instance.render({ fileDiff, fileContainer });
+                    instance.render({
+                        fileDiff,
+                        fileContainer,
+                        lineAnnotations: lineAnnotations.length > 0 ? lineAnnotations : undefined
+                    });
+                }
+            }
+
+            if (focusedThreadID != null || Object.keys(annotationsByPath).length > 0) {
+                function scrollToFocusedThread() {
+                    const targetID = focusedThreadID ? ('review-thread-annotation-' + focusedThreadID) : null;
+                    const target = findInShadow(document, (root) => {
+                        const nodes = Array.from(root.querySelectorAll('[id^="review-thread-annotation-"]'));
+                        if (nodes.length === 0) return null;
+                        if (!targetID) return nodes[0];
+                        return nodes.find((node) => node.id === targetID) || nodes[0];
+                    });
+                    if (!target || !container) return false;
+
+                    let offsetTop = 0;
+                    let el = target;
+                    while (el) {
+                        offsetTop += el.offsetTop || 0;
+                        el = el.offsetParent;
+                    }
+                    container.scrollTop = Math.max(0, offsetTop - container.clientHeight / 3);
+                    return true;
+                }
+
+                if (!scrollToFocusedThread()) {
+                    const observer = new MutationObserver(() => {
+                        if (scrollToFocusedThread()) observer.disconnect();
+                    });
+                    observer.observe(container, { childList: true, subtree: true });
                 }
             }
         } catch (err) {
