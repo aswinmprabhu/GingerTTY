@@ -4,6 +4,15 @@ import Testing
 
 struct TerminalTabStateTests {
     @Test
+    func contentTabsStartWithPersistentTerminal() {
+        let tab = TerminalTabState()
+
+        #expect(tab.contentTabs.count == 1)
+        #expect(tab.contentTabs.first?.id == TerminalTabState.terminalContentTabID)
+        #expect(tab.activeContentTabKind == .terminal)
+    }
+
+    @Test
     func applyPullRequestStateRefreshesActiveReviewThread() {
         let tab = TerminalTabState()
         let staleThread = makeThread(
@@ -63,7 +72,7 @@ struct TerminalTabStateTests {
     }
 
     @Test
-    func openFileViewerClearsDiffStateAndStartsLoading() {
+    func openFileViewerKeepsDiffTabAndStartsLoadingFileTab() {
         let tab = TerminalTabState()
         let file = TerminalRepositoryChangeFile(
             id: "file-1",
@@ -86,8 +95,62 @@ struct TerminalTabStateTests {
         #expect(tab.viewerFileContent == nil)
         #expect(tab.isViewerLoading == true)
         #expect(tab.isViewerSaving == false)
-        #expect(tab.selectedDiffFile == nil)
-        #expect(tab.combinedDiffTitle == nil)
+        #expect(tab.combinedDiffTitle == "All Changes")
+        #expect(tab.contentTabs.contains { $0.id == TerminalTabState.diffContentTabID })
+        #expect(tab.contentTabs.filter { $0.kind == .file }.count == 1)
+        #expect(tab.activeContentTabKind == .file)
+    }
+
+    @Test
+    func openingSecondDiffReusesDiffTabWithoutClosingFiles() {
+        let tab = TerminalTabState()
+        let first = TerminalRepositoryChangeFile(
+            id: "file-1",
+            path: "Sources/App.swift",
+            additions: 3,
+            deletions: 1,
+            isBinary: false,
+            badges: [],
+            sectionTitle: "Uncommitted"
+        )
+        let second = TerminalRepositoryChangeFile(
+            id: "file-2",
+            path: "Sources/Other.swift",
+            additions: 1,
+            deletions: 0,
+            isBinary: false,
+            badges: [],
+            sectionTitle: "Uncommitted"
+        )
+
+        tab.openFileViewer(path: "README.md")
+        tab.setViewerLoadedContent("# GingerTTY\n")
+        tab.openDiffForFile(first)
+        tab.setDiffRawText("first")
+        tab.openDiffForFile(second)
+
+        #expect(tab.contentTabs.filter { $0.id == TerminalTabState.diffContentTabID }.count == 1)
+        #expect(tab.contentTabs.filter { $0.kind == .file }.count == 1)
+        #expect(tab.activeContentTabKind == .diff)
+        #expect(tab.selectedDiffFile?.path == "Sources/Other.swift")
+        #expect(tab.diffRawText == nil)
+    }
+
+    @Test
+    func openingExistingFileFocusesExistingTabAndRestoresDraft() {
+        let tab = TerminalTabState()
+
+        tab.openFileViewer(path: "README.md")
+        tab.setViewerLoadedContent("# GingerTTY\n")
+        tab.setViewerDraftContent("# Edited\n")
+        tab.openFileViewer(path: "Sources/App.swift")
+        tab.setViewerLoadedContent("print(\"hello\")\n")
+        tab.openFileViewer(path: "README.md")
+
+        #expect(tab.contentTabs.filter { $0.kind == .file }.count == 2)
+        #expect(tab.viewerFilePath == "README.md")
+        #expect(tab.viewerFileContent == "# Edited\n")
+        #expect(tab.isViewerDirty)
     }
 
     @Test
@@ -230,6 +293,8 @@ struct TerminalTabStateTests {
         #expect(tab.activeReviewThread == nil)
         #expect(tab.viewerFilePath == nil)
         #expect(tab.combinedDiffTitle == nil)
+        #expect(tab.activeContentTabKind == .terminal)
+        #expect(!tab.contentTabs.contains { $0.id == TerminalTabState.diffContentTabID })
     }
 
     @Test
@@ -245,6 +310,8 @@ struct TerminalTabStateTests {
         #expect(tab.isCombinedDiffLoading == false)
         #expect(tab.selectedDiffFile == nil)
         #expect(tab.viewerFilePath == nil)
+        #expect(tab.activeContentTabKind == .terminal)
+        #expect(!tab.contentTabs.contains { $0.id == TerminalTabState.diffContentTabID })
     }
 
     @Test

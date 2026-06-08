@@ -49,6 +49,10 @@ extension Ghostty {
             customConfig.allowFromNotificationBehavior
         }
 
+        /// Directory under which local repositories live, used to resolve a GitHub
+        /// PR URL to a local checkout for review. Defaults to `~/code`.
+        var gingerttyCodeDirectory: String { customConfig.codeDirectory }
+
 
         init(config: ghostty_config_t?, customConfig: CustomConfig) {
             self.config = config
@@ -770,7 +774,7 @@ extension Ghostty.Config {
         case native
 
         var usesCustomTabBar: Bool {
-            self == .vertical
+            true
         }
     }
 
@@ -782,6 +786,7 @@ extension Ghostty.Config {
     struct CustomConfig {
         let macosTabBarMode: MacOSTabBarMode
         let allowFromNotificationBehavior: AllowFromNotificationBehavior
+        let codeDirectory: String
 
         init(
             preferredPath: String? = nil,
@@ -796,6 +801,7 @@ extension Ghostty.Config {
             let parsed = parser.loadCustomConfig()
             self.macosTabBarMode = parsed.tabBarMode
             self.allowFromNotificationBehavior = parsed.allowFromNotificationBehavior
+            self.codeDirectory = parsed.codeDirectory
         }
 
         private struct Parser {
@@ -806,6 +812,7 @@ extension Ghostty.Config {
             struct ParsedValues {
                 var tabBarMode: MacOSTabBarMode = .vertical
                 var allowFromNotificationBehavior: AllowFromNotificationBehavior = .once
+                var codeDirectory: String = NSString(string: "~/code").expandingTildeInPath
             }
 
             func loadCustomConfig() -> ParsedValues {
@@ -882,11 +889,22 @@ extension Ghostty.Config {
                     switch entry.key {
                     case "macos-tab-bar":
                         if let parsed = MacOSTabBarMode(rawValue: normalizedValue(entry.value)) {
-                            values.tabBarMode = parsed
+                            switch parsed {
+                            case .vertical, .horizontal, .native:
+                                values.tabBarMode = .vertical
+                            }
                         }
                     case "gingertty-allow-from-notification-behavior":
                         if let parsed = AllowFromNotificationBehavior(rawValue: normalizedValue(entry.value)) {
                             values.allowFromNotificationBehavior = parsed
+                        }
+                    case "gingertty-code-directory":
+                        // Paths are case-sensitive, so avoid normalizedValue (which lowercases).
+                        let raw = unquotedValue(entry.value)
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        let expanded = NSString(string: raw).expandingTildeInPath
+                        if !expanded.isEmpty {
+                            values.codeDirectory = expanded
                         }
                     default:
                         break

@@ -200,7 +200,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     }
 
     var isSelectedRightSidebarCollapsed: Bool {
-        tabState.isRightSidebarCollapsed
+        SidebarCollapseState.shared.isRightSidebarCollapsed
     }
 
     var selectedRightSidebarSplit: CGFloat {
@@ -577,10 +577,10 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     }
 
     func setSelectedRightSidebarCollapsed(_ isCollapsed: Bool) {
-        guard tabState.isRightSidebarCollapsed != isCollapsed else { return }
+        // Sidebar visibility is app-wide (shared across all tabs/windows).
+        guard SidebarCollapseState.shared.isRightSidebarCollapsed != isCollapsed else { return }
 
-        tabState.setRightSidebarCollapsed(isCollapsed)
-        invalidateRestorableState()
+        SidebarCollapseState.shared.isRightSidebarCollapsed = isCollapsed
 
         if !isCollapsed {
             refreshFocusedContext(forceLocalRefresh: true, forcePullRequestRefresh: false)
@@ -601,6 +601,35 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
     func resetSelectedRightSidebarSplit() {
         setSelectedRightSidebarSplit(Self.defaultRightSidebarSplit)
+    }
+
+    func selectContentTab(_ id: String) {
+        tabState.setActiveContentTab(id)
+        if tabState.activeContentTabKind == .file,
+           tabState.isViewerLoading,
+           tabState.viewerFileContent == nil,
+           let resolvedPath = tabState.viewerResolvedFilePath {
+            loadViewerFile(at: resolvedPath, tabID: tabState.activeFileContentTabID)
+        }
+    }
+
+    func closeContentTab(_ id: String) {
+        guard let contentTab = tabState.contentTabs.first(where: { $0.id == id }),
+              contentTab.isClosable else {
+            return
+        }
+
+        switch contentTab.kind {
+        case .terminal:
+            return
+        case .diff:
+            closeDiff()
+        case .file:
+            if tabState.activeContentTabID != id {
+                tabState.setActiveContentTab(id)
+            }
+            closeFileViewer()
+        }
     }
 
     func refreshPullRequestFromUI() {
@@ -704,17 +733,19 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         )
 
         tabState.openPlanReview(session)
-        loadViewerFile(at: scratchFilePath)
+        loadViewerFile(at: scratchFilePath, tabID: tabState.activeFileContentTabID)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
     private func openViewer(displayPath: String, resolvedPath: String) {
         tabState.openFileViewer(path: displayPath, resolvedPath: resolvedPath)
-        loadViewerFile(at: resolvedPath)
+        if tabState.viewerFileContent == nil && tabState.viewerLoadError == nil {
+            loadViewerFile(at: resolvedPath, tabID: tabState.activeFileContentTabID)
+        }
     }
 
-    private func loadViewerFile(at path: String) {
+    private func loadViewerFile(at path: String, tabID: String?) {
         fileLoadTask?.cancel()
         fileSaveTask?.cancel()
 
@@ -724,10 +755,10 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             do {
                 let content = try String(contentsOfFile: path, encoding: .utf8)
                 guard !Task.isCancelled else { return }
-                await MainActor.run { tab.setViewerLoadedContent(content) }
+                await MainActor.run { tab.setViewerLoadedContent(content, tabID: tabID) }
             } catch {
                 guard !Task.isCancelled else { return }
-                await MainActor.run { tab.setViewerFileLoadError(error.localizedDescription) }
+                await MainActor.run { tab.setViewerFileLoadError(error.localizedDescription, tabID: tabID) }
             }
         }
     }
@@ -778,9 +809,57 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     }
 
     func closeFileViewer() {
+        guard confirmCloseActiveFileViewerIfNeeded() else { return }
         fileLoadTask?.cancel()
         fileSaveTask?.cancel()
         tabState.closeFileViewer()
+    }
+
+    private func confirmCloseActiveFileViewerIfNeeded() -> Bool {
+        guard tabState.isViewerDirty else { return true }
+
+        let alert = NSAlert()
+        alert.messageText = "Save changes before closing?"
+        if let path = tabState.viewerFilePath {
+            alert.informativeText = "Your changes to \(URL(fileURLWithPath: path).lastPathComponent) will be lost if you discard them."
+        } else {
+            alert.informativeText = "Your changes will be lost if you discard them."
+        }
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Discard")
+        alert.addButton(withTitle: "Cancel")
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            return saveActiveViewerFileSynchronouslyBeforeClose()
+        case .alertSecondButtonReturn:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func saveActiveViewerFileSynchronouslyBeforeClose() -> Bool {
+        guard let resolvedPath = tabState.viewerResolvedFilePath,
+              let content = tabState.viewerFileContent,
+              tabState.canSaveViewerFile else {
+            return false
+        }
+
+        tabState.beginViewerSave()
+        do {
+            try content.write(toFile: resolvedPath, atomically: true, encoding: .utf8)
+            tabState.completeViewerSave(with: content)
+            if let repositoryRoot = tabState.repositoryRoot,
+               resolvedPath.hasPrefix(repositoryRoot + "/") || resolvedPath == repositoryRoot {
+                refreshLocalRepository()
+            }
+            return true
+        } catch {
+            tabState.setViewerSaveError(error.localizedDescription)
+            return false
+        }
     }
 
     func approvePlanReview() {
@@ -1134,7 +1213,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             openPendingReviewComment(firstComment)
         }
         tabState.setRightSidebarSelection(.changes)
-        tabState.setRightSidebarCollapsed(false)
+        SidebarCollapseState.shared.isRightSidebarCollapsed = false
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         markTabGroupChanged()
@@ -1328,15 +1407,22 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         let model = TerminalPRReviewSheetModel(
             repositoryService: repositoryService,
-            initialRepositoryRoot: repoRoot
-        ) { [weak self] selectedPR, resolvedRoot in
-            guard let self else { return }
-            self.openPRForReview(selectedPR, repositoryRoot: resolvedRoot)
-        } onCancel: { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.prReviewSheetModel = nil
+            initialRepositoryRoot: repoRoot,
+            codeDirectory: ghostty.config.gingerttyCodeDirectory,
+            onSelect: { [weak self] selectedPR, resolvedRoot in
+                guard let self else { return }
+                self.openPRForReview(selectedPR, repositoryRoot: resolvedRoot)
+            },
+            onOpenLink: { [weak self] pr, resolvedRoot in
+                guard let self else { return }
+                self.openPRForReview(pr, repositoryRoot: resolvedRoot)
+            },
+            onCancel: { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.prReviewSheetModel = nil
+                }
             }
-        }
+        )
 
         prReviewSheetModel = model
         return true
@@ -1372,6 +1458,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                         self.ghostty, from: self.window, withBaseConfig: config
                     ) {
                         newController.tabState.isReviewMode = true
+                        newController.tabState.gingerttyWorktreePath = result.workingDirectory
+                        newController.tabState.gingerttyWorktreeRepositoryRoot = repositoryRoot
                     }
                 }
             } catch {
@@ -1438,7 +1526,12 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
                 var config = Ghostty.SurfaceConfiguration()
                 config.workingDirectory = result.workingDirectory
-                _ = Self.newTab(self.ghostty, from: self.window, withBaseConfig: config)
+                if let newController = Self.newTab(
+                    self.ghostty, from: self.window, withBaseConfig: config
+                ) {
+                    newController.tabState.gingerttyWorktreePath = result.workingDirectory
+                    newController.tabState.gingerttyWorktreeRepositoryRoot = initialRepositoryRoot
+                }
             }
         } onCancel: { [weak self] in
             Task { @MainActor [weak self] in
@@ -1975,7 +2068,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         closeWindow(nil)
     }
 
-    func closeTabImmediately(registerRedo: Bool = true) {
+    func closeTabImmediately(registerUndo: Bool = true, registerRedo: Bool = true) {
         guard let window = window else { return }
         guard let tabGroup = window.tabGroup,
                 tabGroup.windows.count > 1 else {
@@ -1983,8 +2076,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             return
         }
 
-        // Undo
-        if let undoManager, let undoState {
+        // Undo. Skipped when the tab's worktree was removed on close, since undo would
+        // restore a terminal in a now-deleted directory.
+        if registerUndo, let undoManager, let undoState {
             // Register undo action to restore the tab
             undoManager.setActionName("Close Tab")
             undoManager.registerUndo(
@@ -2572,7 +2666,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         }
 
         guard surfaceTree.contains(where: { $0.needsConfirmQuit }) else {
-            closeTabImmediately()
+            confirmWorktreeCleanupThenClose()
             return
         }
 
@@ -2580,7 +2674,65 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             messageText: "Close Tab?",
             informativeText: "The terminal still has a running process. If you close the tab the process will be killed."
         ) {
-            self.closeTabImmediately()
+            self.confirmWorktreeCleanupThenClose()
+        }
+    }
+
+    /// If this tab is backed by a GingerTTY-created worktree, asks whether to remove it
+    /// before closing; otherwise closes immediately.
+    private func confirmWorktreeCleanupThenClose() {
+        guard let worktreePath = tabState.gingerttyWorktreePath,
+              let window = window else {
+            closeTabImmediately()
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "Remove Worktree?"
+        alert.informativeText = "This tab is a GingerTTY worktree at \(worktreePath). Do you want to remove it from disk?"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Remove Worktree")
+        alert.addButton(withTitle: "Keep")
+        alert.addButton(withTitle: "Cancel")
+
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            switch response {
+            case .alertFirstButtonReturn:
+                self.removeWorktreeThenClose(
+                    worktreePath: worktreePath,
+                    repositoryRoot: self.tabState.gingerttyWorktreeRepositoryRoot
+                )
+            case .alertSecondButtonReturn:
+                self.closeTabImmediately()
+            default:
+                break // Cancel: keep the tab open.
+            }
+        }
+    }
+
+    private func removeWorktreeThenClose(worktreePath: String, repositoryRoot: String?) {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.repositoryService.removeWorktree(
+                    worktreePath: worktreePath,
+                    repositoryRoot: repositoryRoot
+                )
+                await MainActor.run {
+                    // Undo can't restore a terminal in a deleted directory, so skip it.
+                    self.closeTabImmediately(registerUndo: false)
+                }
+            } catch {
+                await MainActor.run {
+                    guard let window = self.window else { return }
+                    let failure = NSAlert()
+                    failure.messageText = "Could not remove worktree"
+                    failure.informativeText = error.localizedDescription
+                    failure.alertStyle = .warning
+                    failure.beginSheetModal(for: window, completionHandler: nil)
+                }
+            }
         }
     }
 

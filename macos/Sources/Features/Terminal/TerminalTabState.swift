@@ -21,10 +21,87 @@ enum TerminalInspectorTab: String, CaseIterable, Codable, Identifiable {
             return "Files"
         }
     }
+
+    var systemImage: String {
+        switch self {
+        case .changes:
+            return "plusminus"
+        case .comments:
+            return "text.bubble"
+        case .checks:
+            return "checkmark.seal"
+        case .files:
+            return "folder"
+        }
+    }
+}
+
+enum TerminalContentTabKind: Equatable {
+    case terminal
+    case diff
+    case file
+}
+
+struct TerminalContentTab: Identifiable, Equatable {
+    let id: String
+    var kind: TerminalContentTabKind
+    var title: String
+    var subtitle: String?
+    var isClosable: Bool
+    var isDirty: Bool
+}
+
+private struct TerminalFileContentTabState: Equatable {
+    let id: String
+    let displayPath: String
+    let resolvedPath: String?
+    var layoutMode: TerminalFileViewerLayoutMode
+    var originalContent: String?
+    var content: String?
+    var isLoading: Bool
+    var isSaving: Bool
+    var loadError: String?
+    var saveError: String?
+
+    var isDirty: Bool {
+        content != originalContent
+    }
+
+    var contentTab: TerminalContentTab {
+        TerminalContentTab(
+            id: id,
+            kind: .file,
+            title: URL(fileURLWithPath: displayPath).lastPathComponent,
+            subtitle: displayPath,
+            isClosable: true,
+            isDirty: isDirty
+        )
+    }
 }
 
 final class TerminalTabState: ObservableObject, Identifiable {
+    static let terminalContentTabID = "terminal"
+    static let diffContentTabID = "diff"
+
     let id: UUID
+
+    // MARK: Inner content tabs
+
+    @Published private(set) var contentTabs: [TerminalContentTab]
+    @Published private(set) var activeContentTabID: String
+    private var fileContentTabs: [String: TerminalFileContentTabState] = [:]
+
+    var activeContentTab: TerminalContentTab? {
+        contentTabs.first { $0.id == activeContentTabID }
+    }
+
+    var activeContentTabKind: TerminalContentTabKind {
+        activeContentTab?.kind ?? .terminal
+    }
+
+    var activeFileContentTabID: String? {
+        activeContentTabKind == .file ? activeContentTabID : nil
+    }
 
     // MARK: Repository identity
 
@@ -60,7 +137,6 @@ final class TerminalTabState: ObservableObject, Identifiable {
     // MARK: Sidebar UI state
 
     @Published private(set) var rightSidebarSelection: TerminalInspectorTab
-    @Published private(set) var isRightSidebarCollapsed: Bool
     @Published private(set) var rightSidebarSplit: CGFloat
 
     // MARK: Diff viewer state
@@ -85,6 +161,13 @@ final class TerminalTabState: ObservableObject, Identifiable {
     @Published var prThreadReviewComments: [TerminalLocalReviewComment] = []
     @Published var activeReviewThread: TerminalPullRequestReviewThread?
     @Published var selectedReviewCommentID: UUID?
+
+    // MARK: GingerTTY worktree
+
+    /// Set when this tab was opened into a GingerTTY-created git worktree (via the
+    /// New Worktree or PR Review flows). Drives the cleanup prompt on tab close.
+    @Published var gingerttyWorktreePath: String?
+    @Published var gingerttyWorktreeRepositoryRoot: String?
 
     // MARK: PR review mode
 
@@ -179,8 +262,18 @@ final class TerminalTabState: ObservableObject, Identifiable {
     ) {
         self.id = id
         self.workingDirectory = workingDirectory
+        self.contentTabs = [
+            TerminalContentTab(
+                id: Self.terminalContentTabID,
+                kind: .terminal,
+                title: "Terminal",
+                subtitle: nil,
+                isClosable: false,
+                isDirty: false
+            )
+        ]
+        self.activeContentTabID = Self.terminalContentTabID
         self.rightSidebarSelection = .changes
-        self.isRightSidebarCollapsed = false
         self.rightSidebarSplit = 0.74
     }
 
@@ -263,8 +356,97 @@ final class TerminalTabState: ObservableObject, Identifiable {
         pendingCommentText = ""
         closeDiff()
         closeCombinedDiff()
-        closeFileViewer()
+        closeAllFileViewers()
         highlightedFilePath = nil
+    }
+
+    // MARK: Content tabs
+
+    func setActiveContentTab(_ id: String) {
+        guard contentTabs.contains(where: { $0.id == id }) else { return }
+        persistActiveFileContentTab()
+        activeContentTabID = id
+        restoreActiveFileContentTabIfNeeded()
+        if activeContentTabKind != .file {
+            clearViewerPresentationState()
+        }
+    }
+
+    private static func fileContentTabID(displayPath: String, resolvedPath: String?) -> String {
+        "file:\(resolvedPath ?? displayPath)"
+    }
+
+    private func ensureDiffContentTab() {
+        if !contentTabs.contains(where: { $0.id == Self.diffContentTabID }) {
+            contentTabs.append(TerminalContentTab(
+                id: Self.diffContentTabID,
+                kind: .diff,
+                title: "Diff",
+                subtitle: nil,
+                isClosable: true,
+                isDirty: false
+            ))
+        }
+        setActiveContentTab(Self.diffContentTabID)
+    }
+
+    private func upsertActiveFileContentTab(_ state: TerminalFileContentTabState) {
+        fileContentTabs[state.id] = state
+        if let index = contentTabs.firstIndex(where: { $0.id == state.id }) {
+            contentTabs[index] = state.contentTab
+        } else {
+            contentTabs.append(state.contentTab)
+        }
+        activeContentTabID = state.id
+    }
+
+    private func persistActiveFileContentTab() {
+        guard var state = fileContentTabs[activeContentTabID] else { return }
+        state.layoutMode = viewerLayoutMode
+        state.originalContent = viewerOriginalContent
+        state.content = viewerFileContent
+        state.isLoading = isViewerLoading
+        state.isSaving = isViewerSaving
+        state.loadError = viewerLoadError
+        state.saveError = viewerSaveError
+        upsertActiveFileContentTab(state)
+    }
+
+    private func restoreActiveFileContentTabIfNeeded() {
+        guard let state = fileContentTabs[activeContentTabID] else { return }
+        viewerFilePath = state.displayPath
+        viewerResolvedFilePath = state.resolvedPath
+        viewerLayoutMode = state.layoutMode
+        viewerOriginalContent = state.originalContent
+        viewerFileContent = state.content
+        isViewerLoading = state.isLoading
+        isViewerSaving = state.isSaving
+        viewerLoadError = state.loadError
+        viewerSaveError = state.saveError
+    }
+
+    private func clearViewerPresentationState() {
+        viewerFilePath = nil
+        viewerResolvedFilePath = nil
+        viewerLayoutMode = .editorOnly
+        viewerOriginalContent = nil
+        viewerFileContent = nil
+        isViewerLoading = false
+        isViewerSaving = false
+        viewerLoadError = nil
+        viewerSaveError = nil
+    }
+
+    private func selectFallbackContentTab(afterRemoving removedID: String) {
+        if activeContentTabID != removedID {
+            return
+        }
+
+        activeContentTabID = contentTabs.first?.id ?? Self.terminalContentTabID
+        restoreActiveFileContentTabIfNeeded()
+        if activeContentTabKind != .file {
+            clearViewerPresentationState()
+        }
     }
 
     // MARK: Local repository state
@@ -368,10 +550,6 @@ final class TerminalTabState: ObservableObject, Identifiable {
         rightSidebarSelection = newValue
     }
 
-    func setRightSidebarCollapsed(_ newValue: Bool) {
-        isRightSidebarCollapsed = newValue
-    }
-
     func setRightSidebarSplit(_ newValue: CGFloat) {
         rightSidebarSplit = min(max(newValue, 0.2), 0.95)
     }
@@ -379,6 +557,7 @@ final class TerminalTabState: ObservableObject, Identifiable {
     // MARK: Diff viewer
 
     func openDiffForFile(_ file: TerminalRepositoryChangeFile) {
+        ensureDiffContentTab()
         selectedDiffFile = file
         diffRows = nil
         diffRawText = nil
@@ -389,15 +568,6 @@ final class TerminalTabState: ObservableObject, Identifiable {
         combinedDiffRawText = nil
         combinedDiffFileContents = [:]
         isCombinedDiffLoading = false
-        viewerFilePath = nil
-        viewerResolvedFilePath = nil
-        viewerLayoutMode = .editorOnly
-        viewerOriginalContent = nil
-        viewerFileContent = nil
-        isViewerLoading = false
-        isViewerSaving = false
-        viewerLoadError = nil
-        viewerSaveError = nil
     }
 
     func setDiffRows(_ rows: [SplitDiffRow]) {
@@ -417,6 +587,10 @@ final class TerminalTabState: ObservableObject, Identifiable {
         diffRawText = nil
         diffFileContent = nil
         isDiffLoading = false
+        combinedDiffTitle = nil
+        combinedDiffRawText = nil
+        combinedDiffFileContents = [:]
+        isCombinedDiffLoading = false
         showCommentBox = false
         pendingCommentText = ""
         pendingSelectionStart = nil
@@ -424,60 +598,91 @@ final class TerminalTabState: ObservableObject, Identifiable {
         pendingSelectionSide = nil
         activeReviewThread = nil
         selectedReviewCommentID = nil
+        closeDiffContentTab()
     }
 
     // MARK: File viewer
 
     func openFileViewer(path: String, resolvedPath: String? = nil) {
-        viewerFilePath = path
-        viewerResolvedFilePath = resolvedPath ?? path
-        viewerLayoutMode = .forFilePath(path)
-        viewerOriginalContent = nil
-        viewerFileContent = nil
-        isViewerLoading = true
-        isViewerSaving = false
-        viewerLoadError = nil
-        viewerSaveError = nil
+        persistActiveFileContentTab()
+
+        let resolved = resolvedPath ?? path
+        let tabID = Self.fileContentTabID(displayPath: path, resolvedPath: resolved)
+        if let existing = fileContentTabs[tabID] {
+            upsertActiveFileContentTab(existing)
+            restoreActiveFileContentTabIfNeeded()
+        } else {
+            let state = TerminalFileContentTabState(
+                id: tabID,
+                displayPath: path,
+                resolvedPath: resolved,
+                layoutMode: .forFilePath(path),
+                originalContent: nil,
+                content: nil,
+                isLoading: true,
+                isSaving: false,
+                loadError: nil,
+                saveError: nil
+            )
+            upsertActiveFileContentTab(state)
+            restoreActiveFileContentTabIfNeeded()
+        }
+
         highlightedFilePath = resolvedPath == nil ? path : nil
         rightSidebarSelection = .files
-        if isRightSidebarCollapsed {
-            isRightSidebarCollapsed = false
-        }
-        selectedDiffFile = nil
-        diffRawText = nil
-        diffFileContent = nil
-        isDiffLoading = false
-        combinedDiffTitle = nil
-        combinedDiffRawText = nil
-        combinedDiffFileContents = [:]
-        isCombinedDiffLoading = false
+        SidebarCollapseState.shared.isRightSidebarCollapsed = false
     }
 
-    func setViewerLoadedContent(_ content: String) {
+    func setViewerLoadedContent(_ content: String, tabID: String? = nil) {
+        if let tabID, tabID != activeContentTabID, var state = fileContentTabs[tabID] {
+            state.originalContent = content
+            state.content = content
+            state.isLoading = false
+            state.isSaving = false
+            state.loadError = nil
+            state.saveError = nil
+            upsertInactiveFileContentTab(state)
+            return
+        }
+
         viewerOriginalContent = content
         viewerFileContent = content
         isViewerLoading = false
         isViewerSaving = false
         viewerLoadError = nil
         viewerSaveError = nil
+        persistActiveFileContentTab()
     }
 
-    func setViewerFileLoadError(_ message: String) {
+    func setViewerFileLoadError(_ message: String, tabID: String? = nil) {
+        if let tabID, tabID != activeContentTabID, var state = fileContentTabs[tabID] {
+            state.originalContent = nil
+            state.content = nil
+            state.isLoading = false
+            state.isSaving = false
+            state.loadError = message
+            upsertInactiveFileContentTab(state)
+            return
+        }
+
         viewerOriginalContent = nil
         viewerFileContent = nil
         isViewerLoading = false
         isViewerSaving = false
         viewerLoadError = message
+        persistActiveFileContentTab()
     }
 
     func setViewerDraftContent(_ content: String) {
         viewerFileContent = content
         viewerSaveError = nil
+        persistActiveFileContentTab()
     }
 
     func beginViewerSave() {
         isViewerSaving = true
         viewerSaveError = nil
+        persistActiveFileContentTab()
     }
 
     func completeViewerSave(with content: String) {
@@ -486,33 +691,39 @@ final class TerminalTabState: ObservableObject, Identifiable {
         isViewerSaving = false
         viewerSaveError = nil
         viewerLoadError = nil
+        persistActiveFileContentTab()
     }
 
     func setViewerSaveError(_ message: String) {
         isViewerSaving = false
         viewerSaveError = message
+        persistActiveFileContentTab()
     }
 
     func revertViewerDraftToSaved() {
         viewerFileContent = viewerOriginalContent
         viewerSaveError = nil
+        persistActiveFileContentTab()
     }
 
     func closeFileViewer() {
-        viewerFilePath = nil
-        viewerResolvedFilePath = nil
-        viewerLayoutMode = .editorOnly
-        viewerOriginalContent = nil
-        viewerFileContent = nil
-        isViewerLoading = false
-        isViewerSaving = false
-        viewerLoadError = nil
-        viewerSaveError = nil
+        closeFileViewer(tabID: activeFileContentTabID)
+    }
+
+    func closeFileViewer(tabID: String?) {
+        guard let tabID, fileContentTabs[tabID] != nil else { return }
+        if tabID == activeContentTabID {
+            persistActiveFileContentTab()
+        }
+        fileContentTabs.removeValue(forKey: tabID)
+        contentTabs.removeAll { $0.id == tabID }
+        selectFallbackContentTab(afterRemoving: tabID)
     }
 
     // MARK: Combined diff
 
     func openCombinedDiff(title: String) {
+        ensureDiffContentTab()
         combinedDiffTitle = title
         combinedDiffRawText = nil
         combinedDiffFileContents = [:]
@@ -521,15 +732,6 @@ final class TerminalTabState: ObservableObject, Identifiable {
         diffRawText = nil
         diffFileContent = nil
         isDiffLoading = false
-        viewerFilePath = nil
-        viewerResolvedFilePath = nil
-        viewerLayoutMode = .editorOnly
-        viewerOriginalContent = nil
-        viewerFileContent = nil
-        isViewerLoading = false
-        isViewerSaving = false
-        viewerLoadError = nil
-        viewerSaveError = nil
     }
 
     func setCombinedDiffText(_ text: String, fileContents: [String: String] = [:]) {
@@ -543,6 +745,33 @@ final class TerminalTabState: ObservableObject, Identifiable {
         combinedDiffRawText = nil
         combinedDiffFileContents = [:]
         isCombinedDiffLoading = false
+        selectedDiffFile = nil
+        diffRows = nil
+        diffRawText = nil
+        diffFileContent = nil
+        isDiffLoading = false
+        closeDiffContentTab()
+    }
+
+    private func closeDiffContentTab() {
+        contentTabs.removeAll { $0.id == Self.diffContentTabID }
+        selectFallbackContentTab(afterRemoving: Self.diffContentTabID)
+    }
+
+    private func closeAllFileViewers() {
+        fileContentTabs.removeAll()
+        contentTabs.removeAll { $0.kind == .file }
+        if activeContentTabKind == .file {
+            activeContentTabID = Self.terminalContentTabID
+        }
+        clearViewerPresentationState()
+    }
+
+    private func upsertInactiveFileContentTab(_ state: TerminalFileContentTabState) {
+        fileContentTabs[state.id] = state
+        if let index = contentTabs.firstIndex(where: { $0.id == state.id }) {
+            contentTabs[index] = state.contentTab
+        }
     }
 
     func requestDiffReload() {

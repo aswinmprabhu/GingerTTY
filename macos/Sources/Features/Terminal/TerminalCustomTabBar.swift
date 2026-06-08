@@ -127,15 +127,71 @@ struct VerticalTabBar: View {
             Divider()
 
             VStack(spacing: 0) {
-                TabBarActionButton(title: "New Tab", systemImage: "plus") {
-                    openNewTab(from: controller)
-                }
+                NewTabSplitButton(controller: controller)
             }
             .padding(8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
         .accessibilityIdentifier("terminal-custom-tab-bar-vertical")
+    }
+}
+
+/// Split button that fills the tab-bar width: the primary "New Tab" area opens a new tab,
+/// while the trailing chevron opens a drop-up menu with New Worktree / PR Review.
+private struct NewTabSplitButton: View {
+    @ObservedObject var controller: TerminalController
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button {
+                openNewTab(from: controller)
+            } label: {
+                Label("New Tab", systemImage: "plus")
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("tab-bar-new-tab")
+
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(width: 1, height: 18)
+
+            Menu {
+                Button {
+                    _ = controller.presentWorktreeSheet()
+                } label: {
+                    Label("New Worktree", systemImage: "tree.fill")
+                }
+
+                Button {
+                    _ = controller.presentPRReviewSheet()
+                } label: {
+                    Label("PR Review", systemImage: "text.bubble")
+                }
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.caption2.weight(.semibold))
+                    .frame(width: 30)
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityIdentifier("tab-bar-new-menu")
+        }
+        .frame(maxWidth: .infinity)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+        )
     }
 }
 
@@ -279,17 +335,3 @@ private struct TerminalTabBarRow: View {
     }
 }
 
-private struct TabBarActionButton: View {
-    let title: String
-    let systemImage: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Label(title, systemImage: systemImage)
-                .font(.caption.weight(.semibold))
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.bordered)
-    }
-}

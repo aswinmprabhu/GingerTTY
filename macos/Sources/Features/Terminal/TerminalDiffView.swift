@@ -1876,6 +1876,9 @@ struct TerminalFileViewerView: View {
             Button("") { controller.saveViewerFile() }
                 .keyboardShortcut("s", modifiers: .command)
                 .hidden()
+            Button("") { editorModel.undo() }
+                .keyboardShortcut("u", modifiers: .command)
+                .hidden()
         }
         .onExitCommand {
             controller.closeFileViewer()
@@ -1942,15 +1945,10 @@ struct TerminalFileViewerView: View {
                 .disabled(!tab.canApprovePlanReview)
             }
 
-            Button("Revert") {
-                controller.revertViewerFile()
+            if tab.isViewerSaving {
+                ProgressView()
+                    .controlSize(.small)
             }
-            .disabled(!tab.canRevertViewerFile)
-
-            Button(tab.isViewerSaving ? "Saving…" : "Save") {
-                controller.saveViewerFile()
-            }
-            .disabled(!tab.canSaveViewerFile)
         }
         .padding(14)
         .background(Color(nsColor: .windowBackgroundColor))

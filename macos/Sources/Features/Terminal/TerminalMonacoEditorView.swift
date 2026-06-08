@@ -218,6 +218,10 @@ final class MonacoEditorModel: ObservableObject {
             }
         }
     }
+
+    func undo() {
+        webView?.evaluateJavaScript("window.__gingerttyUndo && window.__gingerttyUndo();")
+    }
 }
 
 struct MonacoMarkdownPreviewWebView: NSViewRepresentable {
@@ -991,6 +995,12 @@ struct MonacoEditorWebView: NSViewRepresentable {
             monaco.editor.setTheme(themeName);
         };
 
+        window.__gingerttyUndo = function() {
+            if (!editor) return;
+            editor.focus();
+            editor.trigger('gingertty', 'undo', null);
+        };
+
         if (typeof require === 'undefined') {
             showError('Failed to load Monaco loader from the app bundle.');
         } else {
@@ -1044,6 +1054,10 @@ struct MonacoEditorWebView: NSViewRepresentable {
             editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
                 const currentContent = editor.getValue();
                 window.webkit.messageHandlers.saveRequested.postMessage({ content: currentContent });
+            });
+
+            editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyU, () => {
+                window.__gingerttyUndo();
             });
 
             editor.focus();

@@ -7,6 +7,7 @@ final class TerminalPRReviewSheetModel: ObservableObject, Identifiable {
     let id = UUID()
 
     @Published var repositoryRoot: String
+    @Published var prLink = ""
     @Published var searchText = ""
     @Published private(set) var pullRequests: [TerminalOpenPullRequest] = []
     @Published private(set) var isLoading = false
@@ -22,21 +23,56 @@ final class TerminalPRReviewSheetModel: ObservableObject, Identifiable {
     private(set) var resolvedRepositoryRoot: String?
 
     private let repositoryService: TerminalRepositoryService
+    private let codeDirectory: String
     private let onSelect: (TerminalOpenPullRequest, String) -> Void
+    private let onOpenLink: (TerminalOpenPullRequest, String) -> Void
     private let onCancel: () -> Void
 
     init(
         repositoryService: TerminalRepositoryService,
         initialRepositoryRoot: String,
+        codeDirectory: String,
         onSelect: @escaping (TerminalOpenPullRequest, String) -> Void,
+        onOpenLink: @escaping (TerminalOpenPullRequest, String) -> Void,
         onCancel: @escaping () -> Void
     ) {
         self.repositoryService = repositoryService
         self.repositoryRoot = initialRepositoryRoot
+        self.codeDirectory = codeDirectory
         self.onSelect = onSelect
+        self.onOpenLink = onOpenLink
         self.onCancel = onCancel
 
         Task { await loadPullRequests() }
+    }
+
+    /// Resolves the pasted GitHub PR URL to a local repo under `codeDirectory` and opens
+    /// a review worktree. Surfaces an error in the sheet if the repo is missing or the URL
+    /// is malformed.
+    func openFromLink() {
+        let link = prLink.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !link.isEmpty else { return }
+
+        isOpening = true
+        errorMessage = nil
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let resolved = try await self.repositoryService.resolvePullRequest(
+                    fromURL: link,
+                    codeDirectory: self.codeDirectory
+                )
+                await MainActor.run {
+                    self.onOpenLink(resolved.pullRequest, resolved.repositoryRoot)
+                }
+            } catch {
+                await MainActor.run {
+                    self.isOpening = false
+                    self.errorMessage = error.localizedDescription
+                }
+            }
+        }
     }
 
     var filteredPullRequests: [TerminalOpenPullRequest] {
@@ -186,6 +222,25 @@ struct TerminalPRReviewSheet: View {
                 .keyboardShortcut(.cancelAction)
             }
             .padding(16)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Open PR by Link")
+                    .font(.headline)
+
+                HStack(spacing: 8) {
+                    TextField("https://github.com/owner/repo/pull/123", text: $model.prLink)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { model.openFromLink() }
+                        .accessibilityIdentifier("pr-review-pr-link")
+                    Button("Open") {
+                        model.openFromLink()
+                    }
+                    .disabled(model.prLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isOpening)
+                    .accessibilityIdentifier("pr-review-open-link")
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Repository")

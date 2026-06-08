@@ -1356,6 +1356,115 @@ actor TerminalRepositoryService {
         )
     }
 
+    /// Components parsed from a GitHub pull request URL.
+    struct ParsedPRURL: Equatable {
+        let owner: String
+        let repo: String
+        let number: Int
+    }
+
+    /// Parses a GitHub PR URL of the form `https://github.com/<owner>/<repo>/pull/<number>`.
+    static func parseGitHubPRURL(_ urlString: String) -> ParsedPRURL? {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed),
+              url.host?.contains("github.com") == true else { return nil }
+
+        // pathComponents includes the leading "/"; drop it.
+        let parts = url.pathComponents.filter { $0 != "/" }
+        guard parts.count >= 4, parts[2] == "pull", let number = Int(parts[3]) else {
+            return nil
+        }
+        return ParsedPRURL(owner: parts[0], repo: parts[1], number: number)
+    }
+
+    /// Resolves a GitHub PR URL to a local repository under `codeDirectory` (matched by
+    /// folder name == repo name) and the corresponding open pull request. Throws if the
+    /// local repository is not present under `codeDirectory`.
+    func resolvePullRequest(
+        fromURL urlString: String,
+        codeDirectory: String
+    ) async throws -> (repositoryRoot: String, pullRequest: TerminalOpenPullRequest) {
+        guard let parsed = Self.parseGitHubPRURL(urlString) else {
+            throw TerminalRepositoryServiceError.invalidResponse(
+                "Not a valid GitHub pull request URL. Expected https://github.com/<owner>/<repo>/pull/<number>."
+            )
+        }
+
+        let candidate = URL(fileURLWithPath: codeDirectory, isDirectory: true)
+            .appendingPathComponent(parsed.repo, isDirectory: true).path
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: candidate, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            throw TerminalRepositoryServiceError.commandFailed(
+                "No local repository named \"\(parsed.repo)\" under \(codeDirectory). Clone it there first."
+            )
+        }
+
+        let root: String
+        do {
+            root = try await git(["-C", candidate, "rev-parse", "--show-toplevel"])
+                .stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            throw TerminalRepositoryServiceError.notARepository
+        }
+
+        let output: TerminalCommandOutput
+        do {
+            output = try await gh(
+                ["pr", "view", String(parsed.number),
+                 "--repo", "\(parsed.owner)/\(parsed.repo)",
+                 "--json", "number,title,url,headRefName,author,updatedAt,isDraft"],
+                currentDirectory: root
+            )
+        } catch let error as TerminalCommandError {
+            throw mapGHError(error)
+        }
+
+        let payload: OpenPullRequestPayload
+        do {
+            payload = try Self.jsonDecoder().decode(
+                OpenPullRequestPayload.self, from: Data(output.stdout.utf8)
+            )
+        } catch {
+            throw TerminalRepositoryServiceError.invalidResponse(
+                "Unable to decode pull request from `gh pr view`."
+            )
+        }
+
+        guard let url = URL(string: payload.url) else {
+            throw TerminalRepositoryServiceError.invalidResponse("Invalid PR url from `gh pr view`.")
+        }
+
+        let pullRequest = TerminalOpenPullRequest(
+            number: payload.number,
+            title: payload.title,
+            headRefName: payload.headRefName,
+            authorLogin: payload.author?.login ?? "unknown",
+            updatedAt: payload.updatedAt,
+            isDraft: payload.isDraft,
+            url: url
+        )
+        return (root, pullRequest)
+    }
+
+    /// Removes a GitHub worktree previously created by GingerTTY. Uses
+    /// `git worktree remove --force`, so the worktree is removed even if it has
+    /// uncommitted changes or is locked.
+    func removeWorktree(worktreePath: String, repositoryRoot: String? = nil) async throws {
+        let repoRoot: String
+        if let repositoryRoot {
+            repoRoot = repositoryRoot
+        } else {
+            let commonDir = try await git(
+                ["-C", worktreePath, "rev-parse", "--path-format=absolute", "--git-common-dir"]
+            ).stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            // The common dir is typically "<repoRoot>/.git"; normalize to the repo root.
+            repoRoot = commonDir.hasSuffix("/.git") ? String(commonDir.dropLast(5)) : commonDir
+        }
+
+        _ = try await git(["-C", repoRoot, "worktree", "remove", "--force", worktreePath])
+    }
+
     private func resolveGitHubRepo(remote: String, repositoryRoot: String) async -> String? {
         guard let output = try? await git(["-C", repositoryRoot, "remote", "get-url", remote]) else {
             return nil
@@ -2064,16 +2173,30 @@ actor TerminalRepositoryService {
                 )
             }
 
-            _ = try await git(
-                [
-                    "-C",
-                    repositoryRoot,
-                    "worktree",
-                    "add",
-                    worktreePath,
-                    branch.shortBranchName,
-                ]
-            )
+            do {
+                _ = try await git(
+                    [
+                        "-C",
+                        repositoryRoot,
+                        "worktree",
+                        "add",
+                        worktreePath,
+                        branch.shortBranchName,
+                    ]
+                )
+            } catch let error as TerminalCommandError {
+                // The branch may already be checked out elsewhere (another worktree or the
+                // main repo). In that case open that existing location instead of failing.
+                if case let .nonZeroExit(_, _, stderr) = error,
+                   let existingPath = Self.parseAlreadyCheckedOutPath(fromStderr: stderr) {
+                    return TerminalWorktreeCreationResult(
+                        workingDirectory: existingPath,
+                        branchName: branchName,
+                        reusedExistingPath: true
+                    )
+                }
+                throw error
+            }
 
         case let .newBranch(name, base):
             _ = try await git(
@@ -2164,6 +2287,21 @@ actor TerminalRepositoryService {
                 if standardizedPath != standardizedRoot {
                     return standardizedPath
                 }
+            }
+        }
+        return nil
+    }
+
+    /// Extracts the path from git's "already used by worktree at '<path>'" /
+    /// "already checked out at '<path>'" error, so we can open that location instead.
+    static func parseAlreadyCheckedOutPath(fromStderr stderr: String) -> String? {
+        for marker in ["already used by worktree at '", "already checked out at '"] {
+            guard let range = stderr.range(of: marker) else { continue }
+            let rest = stderr[range.upperBound...]
+            guard let endQuote = rest.firstIndex(of: "'") else { continue }
+            let path = String(rest[..<endQuote]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !path.isEmpty {
+                return URL(fileURLWithPath: path).standardizedFileURL.path
             }
         }
         return nil

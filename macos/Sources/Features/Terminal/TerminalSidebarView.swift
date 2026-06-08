@@ -8,10 +8,19 @@ final class SidebarWidthState: ObservableObject {
     private init() {}
 }
 
+/// App-wide visibility of the right sidebar. Shared across all tabs/windows so
+/// that Cmd-B toggles the inspector everywhere and new tabs inherit the state.
+final class SidebarCollapseState: ObservableObject {
+    static let shared = SidebarCollapseState()
+    @Published var isRightSidebarCollapsed: Bool = false
+    private init() {}
+}
+
 struct TerminalWindowView: View {
     @ObservedObject var controller: TerminalController
     @ObservedObject private var tab: TerminalTabState
     @ObservedObject private var sidebarWidths = SidebarWidthState.shared
+    @ObservedObject private var sidebarCollapse = SidebarCollapseState.shared
 
     private let leftTabBarMinWidth: CGFloat = 200
     private let leftTabBarMaxWidth: CGFloat = 360
@@ -56,6 +65,12 @@ struct TerminalWindowView: View {
             }
             .keyboardShortcut("p", modifiers: .command)
             .hidden()
+
+            Button("") {
+                controller.toggleSelectedRightSidebarCollapsed()
+            }
+            .keyboardShortcut("b", modifiers: .command)
+            .hidden()
         }
         .accessibilityIdentifier("terminal-window-view")
     }
@@ -63,14 +78,14 @@ struct TerminalWindowView: View {
     private var terminalAndSidebarContent: some View {
         HStack(spacing: 0) {
             if controller.isSelectedRightSidebarCollapsed {
-                terminalContent
+                mainContent
 
                 Divider()
 
                 RightSidebarRail(controller: controller)
                     .frame(width: rightSidebarRailWidth)
             } else {
-                terminalContent
+                mainContent
 
                 ResizableDivider(
                     dimension: $sidebarWidths.rightSidebarWidth,
@@ -85,19 +100,125 @@ struct TerminalWindowView: View {
         }
     }
 
+    private var mainContent: some View {
+        VStack(spacing: 0) {
+            ContentTabStrip(controller: controller, tab: tab)
+            Divider()
+            terminalContent
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     private var terminalContent: some View {
         Group {
-            if tab.selectedDiffFile != nil {
-                TerminalDiffView(controller: controller, tab: tab)
-            } else if tab.combinedDiffTitle != nil {
-                TerminalCombinedDiffView(controller: controller, tab: tab)
-            } else if tab.viewerFilePath != nil {
-                TerminalFileViewerView(controller: controller, tab: tab)
-            } else {
+            switch tab.activeContentTabKind {
+            case .terminal:
                 TerminalView(ghostty: controller.ghostty, viewModel: controller, delegate: controller)
+            case .diff:
+                if tab.combinedDiffTitle != nil {
+                    TerminalCombinedDiffView(controller: controller, tab: tab)
+                } else {
+                    TerminalDiffView(controller: controller, tab: tab)
+                }
+            case .file:
+                TerminalFileViewerView(controller: controller, tab: tab)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct ContentTabStrip: View {
+    @ObservedObject var controller: TerminalController
+    @ObservedObject var tab: TerminalTabState
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+                ForEach(tab.contentTabs) { item in
+                    ContentTabButton(
+                        item: item,
+                        isSelected: item.id == tab.activeContentTabID,
+                        onSelect: { controller.selectContentTab(item.id) },
+                        onClose: { controller.closeContentTab(item.id) }
+                    )
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .accessibilityIdentifier("terminal-content-tab-strip")
+    }
+}
+
+private struct ContentTabButton: View {
+    let item: TerminalContentTab
+    let isSelected: Bool
+    let onSelect: () -> Void
+    let onClose: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button(action: onSelect) {
+                HStack(spacing: 5) {
+                    Image(systemName: iconName)
+                        .font(.caption)
+
+                    Text(item.title)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+
+                    if item.isDirty {
+                        Circle()
+                            .fill(Color.orange)
+                            .frame(width: 6, height: 6)
+                    }
+                }
+                .padding(.leading, 8)
+                .padding(.trailing, item.isClosable ? 2 : 8)
+                .padding(.vertical, 5)
+            }
+            .buttonStyle(.plain)
+
+            if item.isClosable {
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.caption2.weight(.bold))
+                        .frame(width: 14, height: 14)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .opacity(isHovering || isSelected ? 1 : 0.55)
+                .padding(.trailing, 6)
+                .help("Close")
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(isSelected ? Color.accentColor.opacity(0.22) : Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(isSelected ? Color.accentColor.opacity(0.45) : Color(nsColor: .separatorColor).opacity(0.35))
+        )
+        .onHover { isHovering = $0 }
+        .help(item.subtitle ?? item.title)
+        .accessibilityIdentifier("terminal-content-tab-\(item.id)")
+    }
+
+    private var iconName: String {
+        switch item.kind {
+        case .terminal:
+            return "terminal"
+        case .diff:
+            return "doc.text.magnifyingglass"
+        case .file:
+            return "doc.text"
+        }
     }
 }
 
@@ -128,31 +249,54 @@ private struct RightSidebarRail: View {
             .accessibilityIdentifier("sidebar-right-toggle")
 
             Spacer()
-
-            Button {
-                _ = controller.presentPRReviewSheet()
-            } label: {
-                Image(systemName: "text.bubble")
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-            }
-            .buttonStyle(.plain)
-            .help("PR Reviews")
-            .accessibilityIdentifier("sidebar-right-pr-reviews-rail")
-
-            Button {
-                _ = controller.presentWorktreeSheet()
-            } label: {
-                Image(systemName: "tree.fill")
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-            }
-            .buttonStyle(.plain)
-            .help("New Worktree")
-            .accessibilityIdentifier("sidebar-right-worktree-rail")
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .accessibilityIdentifier("terminal-right-sidebar-rail")
+    }
+}
+
+/// A segmented control whose segments split the full available width equally.
+/// SwiftUI's native `.segmented` Picker sizes each segment to its icon, leaving the
+/// control small in a wide sidebar — this fills the bar instead.
+private struct InspectorSegmentedControl: View {
+    let selection: TerminalInspectorTab
+    let onSelect: (TerminalInspectorTab) -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(TerminalInspectorTab.allCases.enumerated()), id: \.element) { index, item in
+                let isSelected = selection == item
+
+                Button {
+                    onSelect(item)
+                } label: {
+                    Image(systemName: item.systemImage)
+                        .imageScale(.medium)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+                .background(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
+                .help(item.title)
+                .accessibilityLabel(item.title)
+
+                if index < TerminalInspectorTab.allCases.count - 1 {
+                    Rectangle()
+                        .fill(Color(nsColor: .separatorColor))
+                        .frame(width: 1, height: 16)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+        )
     }
 }
 
@@ -165,23 +309,10 @@ private struct RightSidebarInspector: View {
             PullRequestHeaderCard(controller: controller, tab: tab)
                 .padding(14)
 
-            HStack {
-                Spacer(minLength: 0)
-                Picker(
-                    "",
-                    selection: Binding(
-                        get: { tab.rightSidebarSelection },
-                        set: { controller.setSelectedRightSidebarSelection($0) }
-                    )
-                ) {
-                    ForEach(TerminalInspectorTab.allCases) { item in
-                        Text(item.title).tag(item)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                Spacer(minLength: 0)
-            }
+            InspectorSegmentedControl(
+                selection: tab.rightSidebarSelection,
+                onSelect: { controller.setSelectedRightSidebarSelection($0) }
+            )
             .padding(.horizontal, 14)
             .padding(.bottom, 14)
             .accessibilityIdentifier("sidebar-right-tabs")
@@ -204,29 +335,6 @@ private struct RightSidebarInspector: View {
                 .padding(14)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-
-            Divider()
-
-            VStack(spacing: 10) {
-                Button {
-                    _ = controller.presentPRReviewSheet()
-                } label: {
-                    Label("PR Reviews", systemImage: "text.bubble")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .accessibilityIdentifier("sidebar-right-pr-reviews-inspector")
-
-                Button {
-                    _ = controller.presentWorktreeSheet()
-                } label: {
-                    Label("New Worktree", systemImage: "tree.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .accessibilityIdentifier("sidebar-right-worktree-inspector")
-            }
-            .padding(14)
         }
     }
 }

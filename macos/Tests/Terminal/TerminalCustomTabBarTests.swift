@@ -17,7 +17,7 @@ struct TerminalCustomTabBarTests {
     }
 
     @Test
-    func customConfigParsesHorizontal() throws {
+    func customConfigTreatsHorizontalAsVertical() throws {
         try withTemporaryDirectorySync { temporaryRoot in
             let configURL = temporaryRoot.appendingPathComponent("config.ghostty")
             let includedDirectory = temporaryRoot.appendingPathComponent("nested", isDirectory: true)
@@ -32,7 +32,7 @@ struct TerminalCustomTabBarTests {
 
             let config = Ghostty.Config.CustomConfig(preferredPath: configURL.path)
 
-            #expect(config.macosTabBarMode == .horizontal)
+            #expect(config.macosTabBarMode == .vertical)
         }
     }
 
@@ -64,15 +64,40 @@ struct TerminalCustomTabBarTests {
                 "HOME": temporaryRoot.path,
             ])
 
-            #expect(config.macosTabBarMode == .horizontal)
+            #expect(config.macosTabBarMode == .vertical)
         }
     }
 
     @Test
-    func customTabBarModeOnlyUsesCustomUIForVertical() {
+    func customConfigDefaultsCodeDirectoryToHomeCode() throws {
+        try withTemporaryDirectorySync { temporaryRoot in
+            let configURL = temporaryRoot.appendingPathComponent("config.ghostty")
+            try "font-size = 14\n".write(to: configURL, atomically: true, encoding: .utf8)
+
+            let config = Ghostty.Config.CustomConfig(preferredPath: configURL.path)
+
+            #expect(config.codeDirectory == NSString(string: "~/code").expandingTildeInPath)
+        }
+    }
+
+    @Test
+    func customConfigParsesCodeDirectoryPreservingCaseAndExpandingTilde() throws {
+        try withTemporaryDirectorySync { temporaryRoot in
+            let configURL = temporaryRoot.appendingPathComponent("config.ghostty")
+            try "gingertty-code-directory = ~/CodeStuff/MyRepos\n"
+                .write(to: configURL, atomically: true, encoding: .utf8)
+
+            let config = Ghostty.Config.CustomConfig(preferredPath: configURL.path)
+
+            #expect(config.codeDirectory == NSString(string: "~/CodeStuff/MyRepos").expandingTildeInPath)
+        }
+    }
+
+    @Test
+    func customTabBarModeDisallowsHorizontalNativeUI() {
         #expect(Ghostty.Config.MacOSTabBarMode.vertical.usesCustomTabBar)
-        #expect(!Ghostty.Config.MacOSTabBarMode.horizontal.usesCustomTabBar)
-        #expect(!Ghostty.Config.MacOSTabBarMode.native.usesCustomTabBar)
+        #expect(Ghostty.Config.MacOSTabBarMode.horizontal.usesCustomTabBar)
+        #expect(Ghostty.Config.MacOSTabBarMode.native.usesCustomTabBar)
     }
 
     @Test
