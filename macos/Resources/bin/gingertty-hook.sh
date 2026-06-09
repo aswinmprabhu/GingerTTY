@@ -30,6 +30,8 @@ set_status() {
 
 clear_status() {
     osascript -e "tell application \"GingerTTY\" to set agent status \"\" on terminal id \"$TERMINAL_ID\"" &>/dev/null
+    # Also clear the saved agent session so it isn't restored after a clean end.
+    osascript -e "tell application \"GingerTTY\" to register agent session \"\" on terminal id \"$TERMINAL_ID\"" &>/dev/null
 }
 
 prepare_permission_request_files() {

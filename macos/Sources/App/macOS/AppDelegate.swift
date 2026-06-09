@@ -353,7 +353,7 @@ class AppDelegate: NSObject,
             //   - if we're restoring from persisted state
             if TerminalController.all.isEmpty && derivedConfig.initialWindow {
                 undoManager.disableUndoRegistration()
-                _ = TerminalController.newWindow(ghostty)
+                restoreAgentSessionsOrCreateInitialWindow()
                 undoManager.enableUndoRegistration()
             }
         }
@@ -402,6 +402,28 @@ class AppDelegate: NSObject,
             }
         }
 
+        // Offer to save any running AI agent sessions so they can be resumed next launch.
+        // When agents are running this stands in for the generic quit confirmation below.
+        let agentSessions = collectRunningAgentSessions()
+        if !agentSessions.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "Save agent sessions?"
+            alert.informativeText = "\(agentSessions.count) running agent session(s) (Claude/Copilot) can be saved so you can resume them next launch. All terminal sessions will be terminated."
+            alert.addButton(withTitle: "Save & Quit")
+            alert.addButton(withTitle: "Quit Without Saving")
+            alert.addButton(withTitle: "Cancel")
+            alert.alertStyle = .warning
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                AgentSessionStore.save(agentSessions)
+                return .terminateNow
+            case .alertSecondButtonReturn:
+                return .terminateNow
+            default:
+                return .terminateCancel
+            }
+        }
+
         // If our app says we don't need to confirm, we can exit now.
         if !ghostty.needsConfirmQuit { return .terminateNow }
 
@@ -426,6 +448,66 @@ class AppDelegate: NSObject,
         // so remove them all now. In the future we may want to be
         // more selective and only remove surface-targeted notifications.
         UNUserNotificationCenter.current().removeAllDeliveredNotifications()
+    }
+
+    // MARK: - Agent session save/restore
+
+    /// Collects the running Claude/Copilot agent sessions across all terminal tabs.
+    private func collectRunningAgentSessions() -> [SavedAgentSession] {
+        TerminalController.all.compactMap { controller in
+            guard let kind = controller.tabState.agentKind else { return nil }
+            guard let cwd = controller.tabState.workingDirectory ?? controller.focusedSurface?.pwd,
+                  !cwd.isEmpty else {
+                return nil
+            }
+            return SavedAgentSession(
+                workingDirectory: cwd,
+                kind: kind,
+                sessionID: controller.tabState.agentSessionID
+            )
+        }
+    }
+
+    /// On first launch with no windows: if a saved agent session exists, offer to restore
+    /// it; otherwise create the normal initial window. Either way the save is consumed.
+    private func restoreAgentSessionsOrCreateInitialWindow() {
+        guard let saved = AgentSessionStore.load() else {
+            _ = TerminalController.newWindow(ghostty)
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "Restore previous session?"
+        alert.informativeText = "Resume \(saved.sessions.count) agent session(s) from your last GingerTTY session?"
+        alert.addButton(withTitle: "Restore")
+        alert.addButton(withTitle: "Start Fresh")
+        alert.alertStyle = .informational
+        let shouldRestore = alert.runModal() == .alertFirstButtonReturn
+
+        AgentSessionStore.clear()
+
+        guard shouldRestore else {
+            _ = TerminalController.newWindow(ghostty)
+            return
+        }
+
+        var window: NSWindow?
+        for (index, session) in saved.sessions.enumerated() {
+            var config = Ghostty.SurfaceConfiguration()
+            config.workingDirectory = session.workingDirectory
+            config.initialInput = AgentSessionStore.resumeInput(for: session)
+
+            if index == 0 {
+                window = TerminalController.newWindow(ghostty, withBaseConfig: config).window
+            } else {
+                _ = TerminalController.newTab(ghostty, from: window, withBaseConfig: config)
+            }
+        }
+
+        // Fallback if nothing was created (e.g. all entries somehow invalid).
+        if window == nil {
+            _ = TerminalController.newWindow(ghostty)
+        }
     }
 
     /// This is called when the application is already open and someone double-clicks the icon

@@ -240,6 +240,40 @@ extension NSApplication {
         NotificationCenter.default.post(name: .gingerTTYTabGroupDidChange, object: controller.window)
     }
 
+    /// Handler for the `register agent session` AppleScript command.
+    ///
+    /// Required selector name from the command in `sdef`:
+    /// `handleRegisterAgentSessionScriptCommand:`.
+    ///
+    /// Records (or, with an empty kind, clears) the AI agent session running in a tab so
+    /// it can be saved/restored. Called by the `claude`/`copilot` CLI wrappers.
+    @objc(handleRegisterAgentSessionScriptCommand:)
+    func handleRegisterAgentSessionScriptCommand(_ command: NSScriptCommand) -> NSNumber? {
+        guard validateScript(command: command) else { return nil }
+
+        guard let kind = command.directParameter as? String else {
+            command.scriptErrorNumber = errAEParamMissed
+            command.scriptErrorString = "Missing agent kind."
+            return nil
+        }
+
+        guard let terminal = command.evaluatedArguments?["on"] as? ScriptTerminal else {
+            command.scriptErrorNumber = errAEParamMissed
+            command.scriptErrorString = "Missing terminal target."
+            return nil
+        }
+
+        guard let surfaceView = terminal.surfaceView,
+              let controller = surfaceView.window?.windowController as? TerminalController else {
+            return NSNumber(value: false)
+        }
+
+        let sessionID = command.evaluatedArguments?["sessionID"] as? String
+        controller.tabState.registerAgentSession(kind: kind, sessionID: sessionID)
+        NotificationCenter.default.post(name: .gingerTTYTabGroupDidChange, object: controller.window)
+        return NSNumber(value: true)
+    }
+
     /// Handler for the `present permission request` AppleScript command.
     ///
     /// Required selector name from the command in `sdef`:

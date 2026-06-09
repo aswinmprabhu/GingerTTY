@@ -28,6 +28,9 @@
       <responds-to command="set agent status">
         <cocoa method="handleSetAgentStatusScriptCommand:"/>
       </responds-to>
+      <responds-to command="register agent session">
+        <cocoa method="handleRegisterAgentSessionScriptCommand:"/>
+      </responds-to>
       <responds-to command="present permission request">
         <cocoa method="handlePresentPermissionRequestScriptCommand:"/>
       </responds-to>
@@ -238,6 +241,17 @@
       <parameter name="on" code="GonT" type="terminal" description="Target terminal.">
         <cocoa key="on"/>
       </parameter>
+    </command>
+
+    <command name="register agent session" code="GhstRgAS" description="Record the AI agent session (kind and id) running in a terminal, for save/restore.">
+      <direct-parameter type="text" description="Agent kind: claude or copilot. Empty string clears the session."/>
+      <parameter name="session id" code="GRsI" type="text" optional="yes" description="The agent's native session id (UUID).">
+        <cocoa key="sessionID"/>
+      </parameter>
+      <parameter name="on" code="GonT" type="terminal" description="Target terminal.">
+        <cocoa key="on"/>
+      </parameter>
+      <result type="boolean" description="True when the session was recorded."/>
     </command>
 
     <command name="present permission request" code="GhstPPRq" description="Present a Claude Code permission request for a terminal.">

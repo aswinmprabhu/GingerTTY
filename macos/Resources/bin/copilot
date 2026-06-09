@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# GingerTTY wrapper for GitHub Copilot CLI — records the agent session for save/restore.
+#
+# When running inside GingerTTY (GINGERTTY is set), this wrapper assigns a stable
+# session id and tells GingerTTY which session is running in the tab, so it can be
+# saved on quit and resumed on relaunch. Copilot has no hook system, so the wrapper
+# itself reports the start (Running) and, via a trap, the end of the session.
+# Outside GingerTTY, it passes through to the real copilot binary.
+
+# Find the real copilot binary, skipping our own directory.
+find_real_copilot() {
+    local self_dir
+    self_dir="$(cd "$(dirname "$0")" && pwd)"
+    local IFS=:
+    for d in $PATH; do
+        [[ "$d" == "$self_dir" ]] && continue
+        [[ -x "$d/copilot" ]] && printf '%s' "$d/copilot" && return 0
+    done
+    return 1
+}
+
+REAL_COPILOT="$(find_real_copilot)" || { echo "Error: copilot not found in PATH" >&2; exit 127; }
+
+# Pass through if not in GingerTTY or if we're already inside our own wrapper.
+if [[ -z "$GINGERTTY" || -n "$GINGERTTY_COPILOT_WRAPPED" ]]; then
+    exec "$REAL_COPILOT" "$@"
+fi
+export GINGERTTY_COPILOT_WRAPPED=1
+
+# Pass through informational subcommands that don't start a session.
+case "${1:-}" in
+    --help|-h|--version|-v|help|version) exec "$REAL_COPILOT" "$@" ;;
+esac
+
+register_agent_session() {
+    [[ -z "$GINGERTTY_TERMINAL_ID" ]] && return 0
+    osascript -e "tell application \"GingerTTY\" to register agent session \"copilot\" session id \"$1\" on terminal id \"$GINGERTTY_TERMINAL_ID\"" &>/dev/null || true
+}
+
+clear_agent_session() {
+    [[ -z "$GINGERTTY_TERMINAL_ID" ]] && return 0
+    osascript -e "tell application \"GingerTTY\" to register agent session \"\" on terminal id \"$GINGERTTY_TERMINAL_ID\"" &>/dev/null || true
+    osascript -e "tell application \"GingerTTY\" to set agent status \"\" on terminal id \"$GINGERTTY_TERMINAL_ID\"" &>/dev/null || true
+}
+
+set_status() {
+    [[ -z "$GINGERTTY_TERMINAL_ID" ]] && return 0
+    osascript -e "tell application \"GingerTTY\" to set agent status \"$1\" on terminal id \"$GINGERTTY_TERMINAL_ID\"" &>/dev/null || true
+}
+
+# If the user already specified a session/resume flag, run through without a new id.
+SKIP_SESSION_ID=false
+for arg in "$@"; do
+    case "$arg" in
+        --resume|--resume=*|-r|--continue|--session-id|--session-id=*|--connect|--connect=*)
+            SKIP_SESSION_ID=true
+            break
+            ;;
+    esac
+done
+
+# Clear the session indicator when copilot exits (no SessionEnd hook for copilot).
+trap 'clear_agent_session' EXIT
+
+if [[ "$SKIP_SESSION_ID" == true ]]; then
+    register_agent_session ""
+    set_status "Running"
+    "$REAL_COPILOT" "$@"
+else
+    SESSION_ID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+    register_agent_session "$SESSION_ID"
+    set_status "Running"
+    "$REAL_COPILOT" --session-id "$SESSION_ID" "$@"
+fi

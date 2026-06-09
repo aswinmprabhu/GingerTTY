@@ -190,6 +190,15 @@ final class TerminalTabState: ObservableObject, Identifiable {
     @Published private(set) var lastAgentActivityAt: Date?
     @Published private(set) var pendingPermissionRequest: TerminalPermissionRequest?
 
+    // MARK: Agent session identity (for save/restore)
+
+    /// The AI agent currently running in this tab ("claude" / "copilot"), set by the CLI
+    /// wrapper when an agent starts and cleared when it ends. Non-nil means a live,
+    /// resumable agent owns this tab.
+    @Published private(set) var agentKind: String?
+    /// The agent's native session id (UUID), used to resume the conversation.
+    @Published private(set) var agentSessionID: String?
+
     // MARK: Merge state
 
     @Published var mergeInProgress: Bool = false
@@ -307,6 +316,21 @@ final class TerminalTabState: ObservableObject, Identifiable {
             removePermissionNotification()
             pendingPermissionRequest = nil
         }
+    }
+
+    /// Records (or clears) the AI agent session running in this tab. An empty/nil `kind`
+    /// clears it, signalling the agent has ended.
+    func registerAgentSession(kind: String?, sessionID: String?) {
+        let normalizedKind = kind?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let normalizedKind, !normalizedKind.isEmpty else {
+            agentKind = nil
+            agentSessionID = nil
+            return
+        }
+
+        agentKind = normalizedKind
+        let normalizedSessionID = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        agentSessionID = (normalizedSessionID?.isEmpty ?? true) ? nil : normalizedSessionID
     }
 
     func presentPermissionRequest(_ request: TerminalPermissionRequest) {
