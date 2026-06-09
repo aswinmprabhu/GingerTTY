@@ -465,6 +465,24 @@ extension Ghostty {
             return Unmanaged<SurfaceView>.fromOpaque(surface_ud).takeUnretainedValue()
         }
 
+        /// Resolves the terminal controller that should host an action: the action's own
+        /// surface when available, otherwise the frontmost terminal window.
+        static private func terminalController(for target: ghostty_target_s?) -> TerminalController? {
+            if let target,
+               target.tag == GHOSTTY_TARGET_SURFACE,
+               let surface = target.target.surface,
+               let surfaceView = surfaceView(from: surface),
+               let controller = surfaceView.window?.windowController as? TerminalController {
+                return controller
+            }
+
+            if let keyController = NSApp.keyWindow?.windowController as? TerminalController {
+                return keyController
+            }
+
+            return TerminalController.all.first
+        }
+
         // MARK: Actions (macOS)
 
         static func action(_ app: ghostty_app_t, target: ghostty_target_s, action: ghostty_action_s) -> Bool {
@@ -613,7 +631,7 @@ extension Ghostty {
                 checkForUpdates(app)
 
             case GHOSTTY_ACTION_OPEN_URL:
-                return openURL(action.action.open_url)
+                return openURL(target: target, action.action.open_url)
 
             case GHOSTTY_ACTION_UNDO:
                 return undo(app, target: target)
@@ -692,6 +710,7 @@ extension Ghostty {
         }
 
         private static func openURL(
+            target: ghostty_target_s? = nil,
             _ v: ghostty_action_open_url_s
         ) -> Bool {
             let action = Ghostty.Action.OpenURL(c: v)
@@ -708,6 +727,32 @@ extension Ghostty {
                 // like ~/Documents/file.txt resolve correctly.
                 let expandedPath = NSString(string: action.url).standardizingPath
                 url = URL(filePath: expandedPath)
+            }
+
+            // For web links, let the user choose the in-app browser vs the external one,
+            // as long as we can resolve a terminal window to host the browser tab.
+            if let scheme = url.scheme?.lowercased(),
+               scheme == "http" || scheme == "https",
+               let controller = terminalController(for: target),
+               let window = controller.window {
+                let alert = NSAlert()
+                alert.messageText = "Open Link"
+                alert.informativeText = url.absoluteString
+                alert.alertStyle = .informational
+                alert.addButton(withTitle: "Open in GingerTTY")
+                alert.addButton(withTitle: "Open in Browser")
+                alert.addButton(withTitle: "Cancel")
+                alert.beginSheetModal(for: window) { response in
+                    switch response {
+                    case .alertFirstButtonReturn:
+                        controller.openWebTab(url: url)
+                    case .alertSecondButtonReturn:
+                        NSWorkspace.shared.open(url)
+                    default:
+                        break
+                    }
+                }
+                return true
             }
 
             switch action.kind {

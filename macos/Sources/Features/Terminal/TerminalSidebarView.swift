@@ -122,6 +122,10 @@ struct TerminalWindowView: View {
                 }
             case .file:
                 TerminalFileViewerView(controller: controller, tab: tab)
+            case .web:
+                if let session = tab.activeWebSession() {
+                    TerminalWebBrowserView(session: session)
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -218,6 +222,8 @@ private struct ContentTabButton: View {
             return "doc.text.magnifyingglass"
         case .file:
             return "doc.text"
+        case .web:
+            return "globe"
         }
     }
 }

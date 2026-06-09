@@ -173,6 +173,14 @@ private struct NewTabSplitButton: View {
                 } label: {
                     Label("PR Review", systemImage: "text.bubble")
                 }
+
+                if let blank = URL(string: "about:blank") {
+                    Button {
+                        controller.openWebTab(url: blank)
+                    } label: {
+                        Label("New Browser Tab", systemImage: "globe")
+                    }
+                }
             } label: {
                 Image(systemName: "chevron.down")
                     .font(.caption2.weight(.semibold))

@@ -629,7 +629,15 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                 tabState.setActiveContentTab(id)
             }
             closeFileViewer()
+        case .web:
+            tabState.closeWebTab(id)
         }
+    }
+
+    /// Opens `url` in a new in-app browser content tab in this terminal tab.
+    func openWebTab(url: URL) {
+        tabState.openWebTab(url: url)
+        window?.makeKeyAndOrderFront(nil)
     }
 
     func refreshPullRequestFromUI() {

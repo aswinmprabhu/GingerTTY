@@ -37,6 +37,9 @@
       <responds-to command="import review comments">
         <cocoa method="handleImportReviewCommentsScriptCommand:"/>
       </responds-to>
+      <responds-to command="open browser tab">
+        <cocoa method="handleOpenBrowserTabScriptCommand:"/>
+      </responds-to>
 
       <element type="window" access="r">
         <cocoa key="scriptWindows"/>
@@ -185,6 +188,14 @@
         <cocoa key="configuration"/>
       </parameter>
       <result type="tab" description="The newly created tab."/>
+    </command>
+
+    <command name="open browser tab" code="GhstOBTb" description="Open a new tab showing the built-in web browser at the given URL.">
+      <direct-parameter type="text" description="The URL to open (http/https; the scheme is optional)."/>
+      <parameter name="in" code="GObW" type="window" optional="yes" description="Target window for the new tab.">
+        <cocoa key="window"/>
+      </parameter>
+      <result type="tab" description="The newly created browser tab."/>
     </command>
 
     <command name="split" code="GhstSplt" description="Split a terminal in the given direction.">

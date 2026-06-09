@@ -519,6 +519,77 @@ extension NSApplication {
         let fallbackWindow = ScriptWindow(primaryController: createdController)
         return ScriptTab(window: fallbackWindow, controller: createdController)
     }
+
+    /// Handler for the `open browser tab` AppleScript command.
+    ///
+    /// Required selector name from the command in `sdef`:
+    /// `handleOpenBrowserTabScriptCommand:`.
+    ///
+    /// Creates a new tab (in the target window, or the preferred parent window)
+    /// and opens the built-in web browser at the given URL inside it.
+    ///
+    /// Returns the newly created scripting tab object.
+    @objc(handleOpenBrowserTabScriptCommand:)
+    func handleOpenBrowserTabScriptCommand(_ command: NSScriptCommand) -> ScriptTab? {
+        guard validateScript(command: command) else { return nil }
+
+        guard let appDelegate = delegate as? AppDelegate else {
+            command.scriptErrorNumber = errAEEventFailed
+            command.scriptErrorString = "Ghostty app delegate is unavailable."
+            return nil
+        }
+
+        guard let urlText = command.directParameter as? String,
+              let url = TerminalWebSession.normalizedURL(from: urlText) else {
+            command.scriptErrorNumber = errAEParamMissed
+            command.scriptErrorString = "Missing or invalid URL."
+            return nil
+        }
+
+        let targetWindow = command.evaluatedArguments?["window"] as? ScriptWindow
+        let parentWindow: NSWindow?
+        if let targetWindow {
+            guard let resolvedWindow = targetWindow.preferredParentWindow else {
+                command.scriptErrorNumber = errAEEventFailed
+                command.scriptErrorString = "Target window is no longer available."
+                return nil
+            }
+
+            parentWindow = resolvedWindow
+        } else {
+            parentWindow = TerminalController.preferredParent?.window
+        }
+
+        guard let createdController = TerminalController.newTab(
+            appDelegate.ghostty,
+            from: parentWindow,
+            withBaseConfig: nil
+        ) else {
+            command.scriptErrorNumber = errAEEventFailed
+            command.scriptErrorString = "Failed to create tab."
+            return nil
+        }
+
+        createdController.openWebTab(url: url)
+
+        let createdTabID = ScriptTab.stableID(controller: createdController)
+
+        if let targetWindow,
+           let scriptTab = targetWindow.valueInTabs(uniqueID: createdTabID) {
+            return scriptTab
+        }
+
+        for scriptWindow in scriptWindows {
+            if let scriptTab = scriptWindow.valueInTabs(uniqueID: createdTabID) {
+                return scriptTab
+            }
+        }
+
+        // Fall back to wrapping the created controller if AppKit tab-group
+        // bookkeeping has not fully refreshed in the current run loop.
+        let fallbackWindow = ScriptWindow(primaryController: createdController)
+        return ScriptTab(window: fallbackWindow, controller: createdController)
+    }
 }
 
 // MARK: - Private Helpers

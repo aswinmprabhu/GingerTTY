@@ -40,6 +40,7 @@ enum TerminalContentTabKind: Equatable {
     case terminal
     case diff
     case file
+    case web
 }
 
 struct TerminalContentTab: Identifiable, Equatable {
@@ -90,6 +91,7 @@ final class TerminalTabState: ObservableObject, Identifiable {
     @Published private(set) var contentTabs: [TerminalContentTab]
     @Published private(set) var activeContentTabID: String
     private var fileContentTabs: [String: TerminalFileContentTabState] = [:]
+    private var webSessions: [String: TerminalWebSession] = [:]
 
     var activeContentTab: TerminalContentTab? {
         contentTabs.first { $0.id == activeContentTabID }
@@ -447,6 +449,55 @@ final class TerminalTabState: ObservableObject, Identifiable {
         if activeContentTabKind != .file {
             clearViewerPresentationState()
         }
+    }
+
+    // MARK: Web content tabs
+
+    /// The web session backing the active content tab, if it is a web tab.
+    @MainActor
+    func activeWebSession() -> TerminalWebSession? {
+        guard activeContentTabKind == .web else { return nil }
+        return webSessions[activeContentTabID]
+    }
+
+    /// Opens a new browser content tab loading `url` and makes it active. `url` may be
+    /// `about:blank` for a blank tab. Returns the new content tab's id.
+    @MainActor
+    @discardableResult
+    func openWebTab(url: URL) -> String {
+        let id = "web:\(UUID().uuidString)"
+        let session = TerminalWebSession(id: id, initialURL: url)
+        session.onChange = { [weak self, weak session] in
+            guard let self, let session else { return }
+            self.refreshWebContentTab(for: session)
+        }
+        webSessions[id] = session
+
+        contentTabs.append(TerminalContentTab(
+            id: id,
+            kind: .web,
+            title: session.contentTabTitle,
+            subtitle: session.contentTabSubtitle,
+            isClosable: true,
+            isDirty: false
+        ))
+        setActiveContentTab(id)
+        return id
+    }
+
+    @MainActor
+    private func refreshWebContentTab(for session: TerminalWebSession) {
+        guard let index = contentTabs.firstIndex(where: { $0.id == session.id }) else { return }
+        contentTabs[index].title = session.contentTabTitle
+        contentTabs[index].subtitle = session.contentTabSubtitle
+    }
+
+    @MainActor
+    func closeWebTab(_ id: String) {
+        guard webSessions[id] != nil else { return }
+        webSessions.removeValue(forKey: id)
+        contentTabs.removeAll { $0.id == id }
+        selectFallbackContentTab(afterRemoving: id)
     }
 
     // MARK: Local repository state
