@@ -16,18 +16,20 @@ GingerTTY is a macOS terminal emulator built for developers who work with CLI ag
 
 ## Features
 
-- **Custom Vertical Tab Bar** — A sidebar tab bar showing tab title, git branch, and live agent status (Running / Done / Need input). Resizable, with per-tab colors and rename support.
+- **Custom Vertical Tab Bar** — A compact sidebar tab bar showing each tab's title prefixed with a colored agent-status icon (Running / Done / Need input). Resizable, with per-tab colors and rename support. The bottom **New…** split button opens a new tab, or drops up a menu for New Worktree, PR Review, and New Browser Tab.
 - **Git Sidebar Inspector** — A right-side panel with four tabs:
   - **Changes**: Committed and uncommitted file changes, commit list, and review submission
   - **Comments**: GitHub PR review threads with reply/resolve, add-to-chat queueing, and GitHub-style search/filter controls
   - **Checks**: GitHub Actions CI status for the current PR
   - **Files**: File tree of changed files
-- **PR Review Workflow** — PR Reviews modal for selecting open PRs (with repository picker + remote selector), auto-creates a worktree for the PR branch, and opens it in a new tab for review.
-- **Diff Viewer** — Side-by-side split diffs with syntax highlighting. Supports in-page search (`Cmd+F`), copy (`Cmd+C`), line selection for inline review comments, and combined multi-file diffs with review thread annotations.
+- **PR Review Workflow** — PR Reviews modal for selecting open PRs (with repository picker + remote selector), or paste a GitHub PR link to resolve the repo under `code_directory` (default `~/code`). Auto-creates a worktree for the PR branch and opens it in a new tab for review.
+- **Diff Viewer** — Side-by-side split diffs with syntax highlighting. Supports in-page search (`Cmd+F`), copy (`Cmd+C`), and inline review comments. Imported review comments and PR threads appear in both per-file and combined multi-file diffs. In the combined diff, filename headers stick to the top while scrolling and open the full file when clicked.
+- **In-Tab Web Browser** — Open a web page as a content tab (WKWebView) with a back / forward / reload / editable-URL chrome bar, find-in-page (`Cmd+F`), and an open-in-external-browser button. Cmd-clicking a link in the terminal prompts to open it in GingerTTY or your external browser.
 - **File Viewer & Editor** — View and edit any file with full syntax highlighting. Markdown files open in a split preview mode.
 - **Fuzzy File Search** — VS Code-style quick open (`Cmd+P`) with fuzzy scoring.
-- **Git Worktrees** — Create or reuse worktrees from the UI. Supports existing and new branches, opens the worktree in a new tab.
-- **Agent Status Hooks** — AppleScript interface for CLI agents to report their status in the tab bar.
+- **Git Worktrees** — Create or reuse worktrees from the UI (existing or new branches), opened in a new tab. Closing a worktree-backed tab offers to remove the worktree.
+- **Agent Session Save & Restore** — On quit, if Claude Code or Copilot agents are running, GingerTTY offers to save them; on next launch it offers to restore each agent tab in its directory and resume the session.
+- **Agent Status & Session Hooks** — Claude Code and GitHub Copilot CLI wrappers report agent status to the tab bar and register their session for save/restore via AppleScript.
 - **Repository Watcher** — Auto-refreshes local git state on filesystem changes.
 - **PR Merge** — Merge PRs directly from the sidebar with squash, merge, or rebase options.
 
@@ -73,19 +75,32 @@ Controls what the "Allow" button does on permission request notifications.
 | `once` (default) | Allows the single tool invocation that triggered the prompt |
 | `session` | Allows the tool for the rest of the Claude Code session (in-memory only, not persisted to disk) |
 
+### `gingertty-code-directory`
+
+The directory under which local repositories live. Used to resolve a GitHub PR link to a local checkout when opening a PR for review by link.
+
+| Value | Description |
+|---|---|
+| `~/code` (default) | Look for `<code_directory>/<repo>` when opening a PR by link |
+
+```
+gingertty-code-directory = ~/code
+```
+
 Any key prefixed with `gingertty-` is reserved for GingerTTY configuration and will not produce unknown-key warnings.
 
 All other Ghostty configuration works as documented at [ghostty.org/docs](https://ghostty.org/docs).
 
-## Claude Code Integration
+## CLI Agent Integration (Claude Code & Copilot CLI)
 
-GingerTTY ships a `claude` wrapper script and a hook handler (`gingertty-hook.sh`) that are automatically placed on `PATH` inside GingerTTY terminals. When you run `claude` inside GingerTTY:
+GingerTTY ships `claude` and `copilot` wrapper scripts plus a hook handler (`gingertty-hook.sh`) that are automatically placed on `PATH` inside GingerTTY terminals. When you run `claude` or `copilot` inside GingerTTY:
 
-1. **Tab status** — The tab bar shows live agent status (Running, Done, Need input) via Claude Code hooks.
-2. **Permission notifications** — When Claude Code needs tool permission, a macOS notification appears with an "Allow" button. Denial is handled from the terminal prompt.
-3. **Plan review** — When Claude proposes a plan, GingerTTY opens it in the built-in file viewer for review with inline comments.
+1. **Tab status** — The tab bar shows live agent status (Running, Done, Need input) via the agent's hooks.
+2. **Permission notifications** (Claude Code) — When Claude Code needs tool permission, a macOS notification appears with an "Allow" button. Denial is handled from the terminal prompt.
+3. **Plan review** (Claude Code) — When Claude proposes a plan, GingerTTY opens it in the built-in file viewer for review with inline comments.
+4. **Session save/restore** — Each agent is assigned a stable session id and registered with the tab. On quit, running agents can be saved to a single slot; on next launch GingerTTY offers to restore each agent tab in its directory and resume the conversation (`claude --resume <id>` / `copilot --resume=<id>`).
 
-The wrapper injects hooks via `--settings` and sets environment variables (`GINGERTTY`, `GINGERTTY_TERMINAL_ID`, `GINGERTTY_BIN_DIR`) so hooks can communicate back to the app via AppleScript. Outside GingerTTY, the wrapper passes through to the real `claude` binary transparently.
+The Claude wrapper injects hooks via `--settings`; because Copilot has no per-invocation hooks flag, the Copilot wrapper installs the same status hooks into `~/.copilot/hooks/gingertty.json` (a harmless no-op outside GingerTTY). Both wrappers set environment variables (`GINGERTTY`, `GINGERTTY_TERMINAL_ID`, `GINGERTTY_BIN_DIR`) so hooks can communicate back to the app via AppleScript, and pass through to the real binary transparently outside GingerTTY.
 
 ## AppleScript
 
@@ -100,6 +115,28 @@ tell application "GingerTTY" to set agent status "Running" on terminal id "TERMI
 ```
 
 Supported status values: `"Running"`, `"Done"`, `"Need input"`, or `""` to clear.
+
+### `register agent session`
+
+Records (or clears) the AI agent session running in a tab so it can be saved on quit and restored on launch. Called by the `claude` / `copilot` wrappers.
+
+```applescript
+tell application "GingerTTY" to register agent session "claude" ¬
+    session id "0cb916db-26aa-40f2-86b5-1ba81b225fd2" ¬
+    on terminal id "TERMINAL-UUID"
+```
+
+The direct parameter is the agent kind (`"claude"` or `"copilot"`); an empty string clears the session.
+
+### `open browser tab`
+
+Opens a new tab showing the built-in web browser at the given URL.
+
+```applescript
+tell application "GingerTTY" to open browser tab "github.com" -- in window 1
+```
+
+The direct parameter is the URL (`http`/`https`; the scheme is optional). The optional `in <window>` parameter targets a window. Returns the created tab.
 
 ### `present permission request`
 
