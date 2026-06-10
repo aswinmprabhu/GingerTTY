@@ -212,35 +212,24 @@ private struct TerminalTabBarRow: View {
         HStack(alignment: .center, spacing: 8) {
             tabColorIndicator
 
-            VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                if let status = item.agentStatus {
+                    Image(systemName: agentStatusIcon(status))
+                        .font(.caption)
+                        .foregroundStyle(agentStatusColor(status))
+                        .help(status)
+                }
+
                 Text(item.title)
                     .font(.body.weight(.semibold))
                     .lineLimit(1)
-
-                if let subtitle = item.subtitle, !subtitle.isEmpty {
-                    Text(subtitle)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                if let status = item.agentStatus {
-                    Label {
-                        Text(status)
-                    } icon: {
-                        Image(systemName: agentStatusIcon(status))
-                    }
-                    .font(.caption2)
-                    .foregroundStyle(agentStatusColor(status))
-                    .lineLimit(1)
-                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
             closeButton
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 10)
+        .padding(.vertical, 8)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(
