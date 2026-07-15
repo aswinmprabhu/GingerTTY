@@ -1,219 +1,188 @@
 <h1>
 <p align="center">
-  <img src="images/icons/icon_128.png" alt="Logo" width="128">
+  <img src="images/icons/icon_128.png" alt="GingerTTY logo" width="128">
   <br>GingerTTY
 </h1>
-  <p align="center">
-    A terminal for AI-native development. Fork of <a href="https://ghostty.org">Ghostty</a>.
-  </p>
+<p align="center">
+  A fast, native macOS terminal for AI-native development.
+  <br>Fork of <a href="https://ghostty.org">Ghostty</a>, with tools for working alongside CLI agents.
 </p>
 
-https://github.com/user-attachments/assets/15b35302-72a5-43c0-a1b0-42e653841a00
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/15b35302-72a5-43c0-a1b0-42e653841a00" alt="GingerTTY demo">
+</p>
 
-## About
+## What is GingerTTY?
 
-GingerTTY is a macOS terminal emulator built for developers who work with CLI agents like [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Codex](https://openai.com/index/codex/). It's a thin SwiftUI wrapper on top of [Ghostty](https://ghostty.org), inheriting its speed, standards compliance, and native Metal renderer while adding features tailored for agentic workflows.
+GingerTTY is a macOS terminal emulator for developers who work with command-line agents such as [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [GitHub Copilot CLI](https://github.com/features/copilot/cli), and [Codex](https://openai.com/index/codex/).
+
+It keeps the terminal as the primary interface, then adds the surrounding workflow: agent-aware tabs, Git and GitHub inspection, worktrees, code review, an editor, and an in-tab browser. It is a thin SwiftUI layer over Ghostty, so Ghostty's terminal performance, configuration, themes, splits, tabs, and Metal renderer remain available.
+
+## Install
+
+Download the latest universal macOS build from [GitHub Releases](https://github.com/aswinmprabhu/GingerTTY/releases), unzip it, and move `GingerTTY.app` to `/Applications`.
+
+For the GitHub features, install the [GitHub CLI](https://cli.github.com/) and authenticate it once:
+
+```sh
+brew install gh
+gh auth login
+```
+
+GingerTTY does not require its own login, API key, or subscription. GitHub actions use the local `gh` session. Claude Code and Copilot CLI are also optional: install whichever agents you use and make sure their commands are available in your `PATH`.
+
+## The daily workflow
+
+1. Open a terminal tab and start your agent as usual. The custom tab bar shows the tab title, Git branch, and agent status.
+2. Use **New…** at the bottom of the tab bar to open a regular tab, create a worktree, review a pull request, or open a browser tab.
+3. Use the right-hand inspector to understand the repository without leaving the terminal:
+   - **Changes** shows uncommitted, untracked, and committed files, diffs, and commits.
+   - **Comments** shows GitHub review threads and local/imported comments.
+   - **Checks** shows CI status for the current pull request.
+   - **Files** shows the changed-file tree.
+4. Open a file or diff when you need to inspect it. Markdown files have a split source/preview view; diffs support search, copy, syntax highlighting, and inline comments.
+5. Submit or merge a pull request from the inspector when the review is complete. Merge supports squash, merge, and rebase.
+
+The right inspector can be toggled with `Cmd+B`. The fuzzy file picker opens with `Cmd+P`. `Escape` closes the active diff, editor, or review surface.
 
 ## Features
 
-- **Custom Vertical Tab Bar** — A compact sidebar tab bar showing each tab's title prefixed with a colored agent-status icon (Running / Done / Need input). Resizable, with per-tab colors and rename support. The bottom **New…** split button opens a new tab, or drops up a menu for New Worktree, PR Review, and New Browser Tab.
-- **Git Sidebar Inspector** — A right-side panel with four tabs:
-  - **Changes**: Committed and uncommitted file changes, commit list, and review submission
-  - **Comments**: GitHub PR review threads with reply/resolve, add-to-chat queueing, and GitHub-style search/filter controls
-  - **Checks**: GitHub Actions CI status for the current PR
-  - **Files**: File tree of changed files
-- **PR Review Workflow** — PR Reviews modal for selecting open PRs (with repository picker + remote selector), or paste a GitHub PR link to resolve the repo under `code_directory` (default `~/code`). Auto-creates a worktree for the PR branch and opens it in a new tab for review.
-- **Diff Viewer** — Side-by-side split diffs with syntax highlighting. Supports in-page search (`Cmd+F`), copy (`Cmd+C`), and inline review comments. Imported review comments and PR threads appear in both per-file and combined multi-file diffs. In the combined diff, filename headers stick to the top while scrolling and open the full file when clicked.
-- **In-Tab Web Browser** — Open a web page as a content tab (WKWebView) with a back / forward / reload / editable-URL chrome bar, find-in-page (`Cmd+F`), and an open-in-external-browser button. Cmd-clicking a link in the terminal prompts to open it in GingerTTY or your external browser.
-- **File Viewer & Editor** — View and edit any file with full syntax highlighting. Markdown files open in a split preview mode.
-- **Fuzzy File Search** — VS Code-style quick open (`Cmd+P`) with fuzzy scoring.
-- **Git Worktrees** — Create or reuse worktrees from the UI (existing or new branches), opened in a new tab. Closing a worktree-backed tab offers to remove the worktree.
-- **Agent Session Save & Restore** — On quit, if Claude Code or Copilot agents are running, GingerTTY offers to save them; on next launch it offers to restore each agent tab in its directory and resume the session.
-- **Agent Status & Session Hooks** — Claude Code and GitHub Copilot CLI wrappers report agent status to the tab bar and register their session for save/restore via AppleScript.
-- **Repository Watcher** — Auto-refreshes local git state on filesystem changes.
-- **PR Merge** — Merge PRs directly from the sidebar with squash, merge, or rebase options.
+### Terminal and tabs
 
-## Principles
+- Native Ghostty terminal with tabs, splits, themes, keybindings, and Metal rendering.
+- Custom vertical or horizontal tab bars with branch labels, agent-status icons, tab colors, and tab renaming.
+- A compact **New…** split button for tabs, worktrees, PR reviews, and browser tabs.
+- Multiple content tabs inside a terminal tab for terminal sessions, diffs, files, and web pages.
+- Sidebar widths and the right-inspector visibility are shared across tabs and windows.
 
-- **Terminal first.** GingerTTY is a terminal emulator. It doesn't try to be an IDE, agent orchestrator, or platform. The terminal is the interface.
-- **AI-native development for CLI agents.** Built around the workflow of CLI agents like Claude Code and Codex — doesn't try to reinvent the wheel with a UI for agentic development.
-- **No logins, API keys, or subscriptions.** GingerTTY integrates with tools you already have installed locally (like `gh` CLI) rather than requiring accounts or cloud services.
-- **macOS only.** A focused, native SwiftUI app — not a cross-platform compromise.
-- **Full Ghostty compatibility.** All of Ghostty's core macOS features — config, keybindings, themes, splits, tabs, Metal rendering — work as expected.
+### Git, worktrees, and pull requests
 
-## Architecture
+- Live repository state refreshes as files change.
+- Create a worktree from an existing branch or a new branch; worktrees open in their own tab.
+- When a worktree-backed tab closes, GingerTTY offers to remove the worktree.
+- Start a PR review by choosing an open PR or pasting a GitHub PR URL. GingerTTY resolves the local checkout, creates or reuses a worktree for the PR branch, and opens it in a new tab.
+- Review changes in side-by-side diffs, browse the file tree, inspect commits, view CI checks, reply to or resolve review threads, and submit a review. Thread annotations appear in both individual-file and combined diffs; combined diffs keep filenames visible while you scroll and let you click a filename to open the full file.
+- Imported review findings can be shown as local comments or draft PR comments. Comments can be queued as context for the agent with **Fix in chat**.
 
-GingerTTY's core terminal (the Zig-based `libghostty` / GhosttyKit) is upstream Ghostty, untouched. All GingerTTY-specific code lives in the macOS SwiftUI layer.
+### Files and browser
 
-**Key technologies:**
+- Open any repository file with `Cmd+P` and edit it in the Monaco-based editor.
+- Markdown files open with a live split preview.
+- Open a web page as a content tab with back, forward, reload, editable URL, find-in-page, and open-in-browser controls.
+- `Cmd`-click links in the terminal to choose between GingerTTY's browser and the system browser.
 
-- **[Monaco Editor](https://microsoft.github.io/monaco-editor/)** — VS Code's editor, bundled and loaded via WKWebView. Powers the file viewer/editor with full syntax highlighting and markdown split preview.
-- **[Pierre Diffs](https://www.npmjs.com/package/@anthropic-ai/pierre-diffs)** — A diff rendering library loaded via WKWebView to render side-by-side split diffs with syntax highlighting and theme support.
-- **`gh` CLI** — GitHub CLI for fetching PRs, CI checks, review threads, submitting reviews, and merging.
-- **SwiftUI + AppKit** — All UI is SwiftUI with AppKit bridges for WebViews and search fields.
+### Agent integration
+
+GingerTTY provides wrappers for `claude` and `copilot` inside its terminals. They pass through to the real CLI commands and are harmless outside GingerTTY.
+
+- **Status in tabs:** running, done, and needs-input states are reflected in the tab bar.
+- **Claude Code permission notifications:** permission requests can appear as macOS notifications with an **Allow** action. Denials continue through the terminal prompt.
+- **Claude Code plan review:** proposed Markdown plans open in the built-in viewer, where you can approve or request changes with inline comments.
+- **Session save and restore:** when quitting with a Claude Code or Copilot session running, GingerTTY offers to save it. On the next launch, it can restore the agent tab in its original directory and resume the session.
+
+The wrappers set `GINGERTTY`, `GINGERTTY_TERMINAL_ID`, and `GINGERTTY_BIN_DIR` while running inside the app. Claude hooks are supplied per invocation; Copilot hooks are installed in `~/.copilot/hooks/gingertty.json` and are guarded so they do nothing outside GingerTTY.
 
 ## Configuration
 
-GingerTTY reads its own config keys from the standard Ghostty config file (`~/.config/ghostty/config`). These are silently ignored by Ghostty's config parser.
+GingerTTY reads its settings from the standard Ghostty configuration file:
 
-### `macos-tab-bar`
-
-Controls the tab bar style.
-
-| Value | Description |
-|---|---|
-| `vertical` (default) | GingerTTY's custom vertical tab bar sidebar |
-| `horizontal` | Custom horizontal tab bar |
-| `native` | macOS native tab bar (upstream Ghostty behavior) |
-
-### `gingertty-allow-from-notification-behavior`
-
-Controls what the "Allow" button does on permission request notifications.
-
-| Value | Description |
-|---|---|
-| `once` (default) | Allows the single tool invocation that triggered the prompt |
-| `session` | Allows the tool for the rest of the Claude Code session (in-memory only, not persisted to disk) |
-
-### `gingertty-code-directory`
-
-The directory under which local repositories live. Used to resolve a GitHub PR link to a local checkout when opening a PR for review by link.
-
-| Value | Description |
-|---|---|
-| `~/code` (default) | Look for `<code_directory>/<repo>` when opening a PR by link |
-
+```text
+~/.config/ghostty/config
 ```
+
+GingerTTY-specific keys are ignored by upstream Ghostty and use the `gingertty-` prefix.
+
+### Tab bar
+
+```text
+macos-tab-bar = vertical
+```
+
+| Value | Behavior |
+| --- | --- |
+| `vertical` | GingerTTY's custom vertical tab bar (default) |
+| `horizontal` | GingerTTY's custom horizontal tab bar |
+| `native` | Ghostty's native macOS tab bar |
+
+### Permission notification behavior
+
+```text
+gingertty-allow-from-notification-behavior = once
+```
+
+| Value | Behavior |
+| --- | --- |
+| `once` | Allow only the tool invocation that triggered the notification (default) |
+| `session` | Allow the tool for the rest of the Claude Code session; this is in-memory and is not written to disk |
+
+### Local repository directory for PR links
+
+When a PR is opened by URL, GingerTTY looks for the matching repository below `~/code` by default:
+
+```text
 gingertty-code-directory = ~/code
 ```
 
-Any key prefixed with `gingertty-` is reserved for GingerTTY configuration and will not produce unknown-key warnings.
+Change this when your local repositories live elsewhere. A PR for `https://github.com/example/project/pull/42` will resolve to `<code-directory>/project`.
 
-All other Ghostty configuration works as documented at [ghostty.org/docs](https://ghostty.org/docs).
+All other Ghostty configuration is documented at [ghostty.org/docs](https://ghostty.org/docs).
 
-## CLI Agent Integration (Claude Code & Copilot CLI)
+## AppleScript automation
 
-GingerTTY ships `claude` and `copilot` wrapper scripts plus a hook handler (`gingertty-hook.sh`) that are automatically placed on `PATH` inside GingerTTY terminals. When you run `claude` or `copilot` inside GingerTTY:
+GingerTTY extends Ghostty's AppleScript dictionary so agent hooks and external tools can target tabs directly. The commands below are the GingerTTY-specific additions:
 
-1. **Tab status** — The tab bar shows live agent status (Running, Done, Need input) via the agent's hooks.
-2. **Permission notifications** (Claude Code) — When Claude Code needs tool permission, a macOS notification appears with an "Allow" button. Denial is handled from the terminal prompt.
-3. **Plan review** (Claude Code) — When Claude proposes a plan, GingerTTY opens it in the built-in file viewer for review with inline comments.
-4. **Session save/restore** — Each agent is assigned a stable session id and registered with the tab. On quit, running agents can be saved to a single slot; on next launch GingerTTY offers to restore each agent tab in its directory and resume the conversation (`claude --resume <id>` / `copilot --resume=<id>`).
+| Command | Purpose |
+| --- | --- |
+| `set agent status` | Set or clear the tab indicator: `Running`, `Done`, or `Need input` |
+| `register agent session` | Register a Claude or Copilot session for save/restore; pass an empty agent kind to clear it |
+| `open browser tab` | Open an `http` or `https` URL as a browser content tab |
+| `present permission request` | Show a Claude Code permission notification and write its decision to a response file |
+| `open plan review` | Open a Markdown plan and write the approval or requested changes to a response file |
+| `import review comments` | Import comments from a review tool into the selected tab |
 
-The Claude wrapper injects hooks via `--settings`; because Copilot has no per-invocation hooks flag, the Copilot wrapper installs the same status hooks into `~/.copilot/hooks/gingertty.json` (a harmless no-op outside GingerTTY). Both wrappers set environment variables (`GINGERTTY`, `GINGERTTY_TERMINAL_ID`, `GINGERTTY_BIN_DIR`) so hooks can communicate back to the app via AppleScript, and pass through to the real binary transparently outside GingerTTY.
-
-## AppleScript
-
-GingerTTY extends Ghostty's AppleScript dictionary with commands for agent integration. These are called by GingerTTY's hook scripts but can also be used directly.
-
-### `set agent status`
-
-Sets or clears the agent status indicator on a terminal tab.
+Example:
 
 ```applescript
-tell application "GingerTTY" to set agent status "Running" on terminal id "TERMINAL-UUID"
-```
+tell application "GingerTTY" to set agent status "Running" ¬
+    on terminal id "TERMINAL-UUID"
 
-Supported status values: `"Running"`, `"Done"`, `"Need input"`, or `""` to clear.
-
-### `register agent session`
-
-Records (or clears) the AI agent session running in a tab so it can be saved on quit and restored on launch. Called by the `claude` / `copilot` wrappers.
-
-```applescript
 tell application "GingerTTY" to register agent session "claude" ¬
-    session id "0cb916db-26aa-40f2-86b5-1ba81b225fd2" ¬
+    session id "SESSION-ID" ¬
     on terminal id "TERMINAL-UUID"
+
+tell application "GingerTTY" to open browser tab "https://github.com"
 ```
 
-The direct parameter is the agent kind (`"claude"` or `"copilot"`); an empty string clears the session.
+`import review comments` accepts a JSON object with `comments`, `issues`, or `findings`, or a raw array. Each item can provide a repository-relative `path`, a line or line range, a `side` (`new`/`old`), and comment text. In review mode, imported items become draft PR comments; otherwise they become local comments.
 
-### `open browser tab`
+## Build from source
 
-Opens a new tab showing the built-in web browser at the given URL.
+GingerTTY is a macOS Xcode app with the Ghostty Zig library as its terminal core. From the repository root:
 
-```applescript
-tell application "GingerTTY" to open browser tab "github.com" -- in window 1
+```sh
+env -i HOME="$HOME" PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+  xcodebuild -project macos/Ghostty.xcodeproj \
+  -scheme Ghostty -configuration Debug SYMROOT=macos/build build
 ```
 
-The direct parameter is the URL (`http`/`https`; the scheme is optional). The optional `in <window>` parameter targets a window. Returns the created tab.
+The built app is written to `macos/macos/build/Debug/GingerTTY.app`. See [`AGENTS.md`](AGENTS.md) for the release build, test, and install commands used by the project.
 
-### `present permission request`
+## Architecture
 
-Presents a macOS notification for a Claude Code permission request.
+The terminal core (`libghostty` / `GhosttyKit`) is upstream Ghostty. GingerTTY-specific work lives in the macOS SwiftUI layer.
 
-```applescript
-tell application "GingerTTY" to present permission request "npm test" ¬
-    response path "/tmp/response.json" ¬
-    session id "session-1" ¬
-    agent id "main" ¬
-    tool name "Bash" ¬
-    suggestions json "[{\"type\":\"addRules\", ...}]" ¬
-    on terminal id "TERMINAL-UUID"
-```
+- **SwiftUI + AppKit** provide the native application and window/tab experience.
+- **Monaco Editor** renders and edits files in a bundled `WKWebView`.
+- **Pierre Diffs** renders themed side-by-side diffs in a bundled `WKWebView`.
+- **`gh` CLI** supplies GitHub PR, review, checks, and merge operations.
 
-Parameters:
-- **direct parameter** — Summary of the tool input
-- **response path** — Where to write the permission decision JSON
-- **session id** / **agent id** — Claude session and agent identifiers
-- **tool name** — The Claude tool requesting permission (e.g., `Bash`, `Write`)
-- **suggestions json** (optional) — Claude's `permission_suggestions` for session-scoped allow rules
-- **on** — Target terminal
+## Ghostty documentation
 
-### `open plan review`
+For terminal configuration, keybindings, themes, and upstream platform behavior, see:
 
-Opens a markdown plan in the built-in file viewer for review.
-
-```applescript
-tell application "GingerTTY" to open plan review "/tmp/plan.md" ¬
-    response path "/tmp/review-response.json" ¬
-    session id "session-1" ¬
-    agent id "main" ¬
-    on terminal id "TERMINAL-UUID"
-```
-
-The reviewer can approve the plan or request changes with inline comments. The decision is written as JSON to the response path.
-
-### `import review comments`
-
-Imports structured review comments from external tools into GingerTTY's local/draft review comment list for the target terminal tab.
-
-```applescript
-set payload to "{\"comments\":[{\"path\":\"macos/Sources/Features/Terminal/TerminalController.swift\",\"line_start\":956,\"line_end\":970,\"side\":\"new\",\"text\":\"Can we guard this path earlier to avoid opening an empty diff?\"}],\"replaceExisting\":true}"
-
-tell application "GingerTTY" to import review comments payload ¬
-    replace existing true ¬
-    on terminal id "TERMINAL-UUID"
-```
-
-Behavior:
-- In **review mode**, imported comments become pending draft review comments.
-- In **non-review mode**, imported comments become local review comments (with `Fix in chat` support).
-
-Supported payload shapes:
-- `{ "comments": [...] }`
-- `{ "issues": [...] }` (for review tools that emit issue objects)
-- `{ "findings": [...] }`
-- `[...]` (array of comment/issue-like objects)
-
-Common fields:
-- **path/file/filePath** — repository-relative file path
-- **line_start/lineStart/line** and **line_end/lineEnd** — line range
-- **side** — `new`/`right` or `old`/`left`
-- **text/body/comment** — comment body
-- **replaceExisting** (optional) — whether to clear existing local/draft comments before import (default: `true`)
-
-## Ghostty
-
-GingerTTY is built on top of Ghostty. For documentation on terminal features, configuration, keybindings, themes, and more, see:
-
-- [Ghostty Website](https://ghostty.org)
-- [Ghostty Documentation](https://ghostty.org/docs)
+- [Ghostty website](https://ghostty.org)
+- [Ghostty documentation](https://ghostty.org/docs)
 - [Ghostty GitHub](https://github.com/ghostty-org/ghostty)
-
-## Disclaimer
-
-The SwiftUI components in this project are AI-coded, with human review of architectural decisions and high-level correctness. The WebUI parts (Monaco integration, Pierre diffs rendering) are vibe coded with spec-driven development.
 
 ## License
 
